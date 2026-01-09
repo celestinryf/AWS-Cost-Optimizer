@@ -1,210 +1,152 @@
-#!/usr/bin/env python3
-"""
-Create test S3 buckets and objects for testing the cost optimizer.
-
-WARNING: This will create real AWS resources that may incur charges.
-Run cleanup_test_data.py when done testing.
-"""
-
-import io
+import boto3
 import random
 import string
-import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
-import boto3
-from botocore.exceptions import ClientError
+BUCKET_NAME = "cost-optimizer-test"
+REGION = "us-west-2"
 
+def random_string(length = 10):
+    return ''.join(random.choices(string.ascii_lowercase, k = length))
 
-def random_string(length: int = 8) -> str:
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
-
-
-def create_bucket_in_region(s3, bucket_name: str, region: str):
-    """Create a bucket with proper region handling."""
-    if region == "us-east-1":
-        # us-east-1 doesn't use LocationConstraint
-        s3.create_bucket(Bucket=bucket_name)
-    else:
-        s3.create_bucket(
-            Bucket=bucket_name,
-            CreateBucketConfiguration={"LocationConstraint": region}
-        )
-
-
-def create_test_data():
-    """Create test buckets and objects."""
-    session = boto3.session.Session()
-    region = session.region_name or "us-west-2"
-    s3 = boto3.client("s3", region_name=region)
-    
-    print(f"Using region: {region}")
-    
-    # Generate unique bucket prefix
-    prefix = f"cost-optimizer-test-{random_string(6)}"
-    
-    print(f"Creating test data with prefix: {prefix}")
-    print("=" * 50)
-    
-    buckets_created = []
-    
+def create_bucket(s3_client):
+    """Create the test bucket if it doesn't exist"""
     try:
-        # Bucket 1: Old objects in STANDARD (should recommend Glacier)
-        bucket1 = f"{prefix}-old-objects"
-        print(f"\n1. Creating bucket: {bucket1}")
-        
-        try:
-            create_bucket_in_region(s3, bucket1, region)
-        except ClientError as e:
-            if "BucketAlreadyOwnedByYou" not in str(e):
-                raise
-        
-        buckets_created.append(bucket1)
-        
-        # Add some "old" objects (we can't fake LastModified, but we can create objects)
-        for i in range(20):
-            size = random.randint(1024 * 1024, 10 * 1024 * 1024)  # 1-10 MB
-            content = b"x" * size
-            key = f"data/archive/file_{i:03d}.dat"
-            s3.put_object(Bucket=bucket1, Key=key, Body=content)
-            print(f"   Created: {key} ({size / (1024*1024):.1f} MB)")
-        
-        # Bucket 2: No lifecycle policy (should recommend adding one)
-        bucket2 = f"{prefix}-no-lifecycle"
-        print(f"\n2. Creating bucket: {bucket2}")
-        
-        try:
-            create_bucket_in_region(s3, bucket2, region)
-        except ClientError as e:
-            if "BucketAlreadyOwnedByYou" not in str(e):
-                raise
-        
-        buckets_created.append(bucket2)
-        
-        # Add some objects
-        for i in range(50):
-            size = random.randint(100 * 1024, 5 * 1024 * 1024)  # 100KB - 5MB
-            content = b"y" * size
-            key = f"uploads/document_{i:03d}.pdf"
-            s3.put_object(Bucket=bucket2, Key=key, Body=content)
-            print(f"   Created: {key} ({size / (1024*1024):.2f} MB)")
-        
-        # Bucket 3: With lifecycle policy (for comparison)
-        bucket3 = f"{prefix}-with-lifecycle"
-        print(f"\n3. Creating bucket: {bucket3}")
-        
-        try:
-            create_bucket_in_region(s3, bucket3, region)
-        except ClientError as e:
-            if "BucketAlreadyOwnedByYou" not in str(e):
-                raise
-        
-        buckets_created.append(bucket3)
-        
-        # Add lifecycle policy
-        lifecycle_config = {
-            "Rules": [
-                {
-                    "ID": "MoveToGlacier",
-                    "Status": "Enabled",
-                    "Filter": {"Prefix": ""},
-                    "Transitions": [
-                        {
-                            "Days": 90,
-                            "StorageClass": "GLACIER"
-                        }
-                    ],
-                    "AbortIncompleteMultipartUpload": {
-                        "DaysAfterInitiation": 7
-                    }
-                }
-            ]
-        }
-        s3.put_bucket_lifecycle_configuration(
-            Bucket=bucket3, 
-            LifecycleConfiguration=lifecycle_config
-        )
-        print("   Added lifecycle policy")
-        
-        # Add some objects
-        for i in range(10):
-            size = random.randint(1024, 1024 * 1024)
-            content = b"z" * size
-            key = f"data/file_{i:03d}.txt"
-            s3.put_object(Bucket=bucket3, Key=key, Body=content)
-            print(f"   Created: {key}")
-        
-        # Bucket 4: With incomplete multipart upload
-        bucket4 = f"{prefix}-multipart"
-        print(f"\n4. Creating bucket: {bucket4}")
-        
-        try:
-            create_bucket_in_region(s3, bucket4, region)
-        except ClientError as e:
-            if "BucketAlreadyOwnedByYou" not in str(e):
-                raise
-        
-        buckets_created.append(bucket4)
-        
-        # Start a multipart upload but don't complete it
-        mpu = s3.create_multipart_upload(
-            Bucket=bucket4, 
-            Key="large_upload_incomplete.zip"
-        )
-        upload_id = mpu["UploadId"]
-        
-        # Upload one part
-        s3.upload_part(
-            Bucket=bucket4,
-            Key="large_upload_incomplete.zip",
-            UploadId=upload_id,
-            PartNumber=1,
-            Body=b"x" * (5 * 1024 * 1024)  # 5 MB
-        )
-        print(f"   Created incomplete multipart upload: {upload_id[:8]}...")
-        
-        print("\n" + "=" * 50)
-        print("Test data created successfully!")
-        print(f"\nBuckets created: {len(buckets_created)}")
-        for b in buckets_created:
-            print(f"  - {b}")
-        
-        print("\nTo clean up, run:")
-        print(f"  python scripts/cleanup_test_data.py {prefix}")
-        
-        # Save prefix for cleanup
-        with open("reports/test_prefix.txt", "w") as f:
-            f.write(prefix)
-        
-        return buckets_created
-        
-    except Exception as e:
-        print(f"\n[ERROR] {e}")
-        print("\nCleaning up created buckets...")
-        for bucket in buckets_created:
-            try:
-                # Delete all objects first
-                paginator = s3.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=bucket):
-                    for obj in page.get("Contents", []):
-                        s3.delete_object(Bucket=bucket, Key=obj["Key"])
-                
-                # Abort multipart uploads
-                mpu_response = s3.list_multipart_uploads(Bucket=bucket)
-                for upload in mpu_response.get("Uploads", []):
-                    s3.abort_multipart_upload(
-                        Bucket=bucket,
-                        Key=upload["Key"],
-                        UploadId=upload["UploadId"]
-                    )
-                
-                s3.delete_bucket(Bucket=bucket)
-                print(f"  Deleted: {bucket}")
-            except Exception as cleanup_error:
-                print(f"  Failed to delete {bucket}: {cleanup_error}")
-        
-        sys.exit(1)
+        if REGION == "us-west-2":
+            s3_client.create_bucket(Bucket = BUCKET_NAME)
+        else:
+            s3_client.create_bucket(
+                bucket = BUCKET_NAME,
+                CreateBucketConfig = {"LocationConstraint" : REGION}
+            )
 
+        print(f"Created Bucket: {BUCKET_NAME}")
+
+    except s3_client.exceptions.BucketAlreadyOwnedByYou:
+        print(f"Bucket Already Exists: {BUCKET_NAME}")
+    except Exception as e:
+        print(f"Error creating bucket: {e}")
+        raise
+
+def create_old_large_files(s3_client):
+    """Create old, large files that should recommend GLacier transition"""
+    print("\nCreating old large files (should recommend Glacier)...")
+
+    files = [
+        ("archive/quarterly-report-2022-q1.csv", 15),
+        ("archive/quarterly-report-2022-q2.csv", 12),
+        ("archive/backup-jan-2023.tar.gz", 50),
+        ("archive/legacy-data-export.json", 25),
+        ("data/old-analytics-2022.parquet", 30),
+    ]
+
+    for key, size_mb in files:
+        body = b"x" * (size_mb * 1024 * 1024)
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=body,
+            Metadata={"Created": "2022-06-15"}
+        )
+        print(f"Created {key} ({size_mb} MB)")
+
+def create_small_log_files(s3_client):
+    """Create many small log files that should recommend lifecycle policy."""
+    print("\nCreating small log files (should recommend lifecycle policy)...")
+
+    for month in range(1, 13):
+        for day in [1, 15]:
+            key = f"logs/2023/{month:02d}/app-log-{day:02d}.log"
+            body = f"Log entry for 2023-{month:02d}-{day:02d}\n" * 100
+            s3_client.put_object(
+                Bucket=BUCKET_NAME,
+                Key=key,
+                Body=body.encode()
+            )
+
+    print(f"Created 24 log files in logs/2023/")
+
+def create_incomplete_multipart_uploads(s3_client):
+    """Create incomplete multipart uploads that should be cleaned up."""
+    print("\nCreating incomplete multipart uploads (should recommend abort)...")
+
+    uploads = [
+        "uploads/failed-video-upload.mp4",
+        "uploads/incomplete-backup.tar.gz",
+        "uploads/abandoned-dataset.csv",
+    ]
+
+    for key in uploads:
+        response = s3_client.create_multipart_upload(
+            Bucket=BUCKET_NAME,
+            Key=key
+        )
+        print(f"Created incomplete upload: {key} (ID: {response['UploadId'][:8]}...)")
+
+def create_standard_recent_files(s3_client):
+    """Create recent files that should NOT generate recommendations."""
+    print("\nCreating recent files (should NOT generate recommendations)...")
+
+    files = [
+        "current/active-config.json",
+        "current/latest-report.pdf",
+        "current/user-data.csv",
+    ]
+
+    for key in files:
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=b"This is recent, active data should not be moved."
+        )
+        print(f"Created {key} (recent, should keep)")
+
+def print_summary(s3_client):
+    """Print summary of what was created."""
+    print("\n" + "=" * 50)
+    print("TEST DATA SUMMARY")
+    print("=" * 50)
+
+    # Count objects
+    response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
+    objects = response.get("Contents", [])
+
+    total_size = sum(obj["Size"] for obj in objects)
+
+    print(f"Bicket: {BUCKET_NAME}")
+    print(f"Total objects: {len(objects)}")
+    print(f"Total size: {total_size / (1024*1024):.2f} MB")
+
+    mp_response = s3_client.list_multipart_uploads(Bucket=BUCKET_NAME)
+    uploads = mp_response.get("Uploads", [])
+    print(f"Incomplete multipart uploads: {len(uploads)}")
+
+    print("\n Expected recommendations:")
+    print(" - 5 storage class changes (old large files -> Glacier)")
+    print(" - 1 lifecycle policy (for logs/ prefix)")
+    print(" - 3 multipart upload cleanups")
+    print("=" * 50)
+
+def main():
+    print("=" * 50)
+    print("S3 COST OPTIMZER - TEST DATA SETUP")
+    print("=" * 50)
+
+    # Create S3 Client
+    s3_client = boto3.client("s3", region_name=REGION)
+
+    # Create test data
+    create_bucket(s3_client)
+    create_old_large_files(s3_client)
+    create_small_log_files(s3_client)
+    create_incomplete_multipart_uploads(s3_client)
+    create_standard_recent_files(s3_client)
+
+    # Print summary
+    print_summary(s3_client)
+
+    print("\nTest data created successfully!")
+    print(f"\nNext step: Run the scanner against bucket '{BUCKET_NAME}'")
 
 if __name__ == "__main__":
-    create_test_data()
+    main()
