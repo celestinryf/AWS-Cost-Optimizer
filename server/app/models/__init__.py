@@ -1,6 +1,8 @@
 from .contracts import (
     ExecuteRequest,
     ExecuteResponse,
+    ExecutionActionResult,
+    ExecutionActionStatus,
     ExecutionMode,
     Recommendation,
     RecommendationType,

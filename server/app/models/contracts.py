@@ -19,6 +19,7 @@ class RecommendationType(str, Enum):
 
 
 class ExecutionMode(str, Enum):
+    DRY_RUN = "dry_run"
     SAFE = "safe"
     STANDARD = "standard"
     FULL = "full"
@@ -120,8 +121,32 @@ class ScoreResponse(BaseModel):
 
 class ExecuteRequest(BaseModel):
     run_id: str
-    mode: ExecutionMode = ExecutionMode.SAFE
-    dry_run: bool = True
+    mode: ExecutionMode = ExecutionMode.DRY_RUN
+    dry_run: Optional[bool] = None
+    max_actions: int = Field(default=100, ge=1, le=10000)
+
+
+class ExecutionActionStatus(str, Enum):
+    DRY_RUN = "dry_run"
+    EXECUTED = "executed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class ExecutionActionResult(BaseModel):
+    recommendation_id: str
+    recommendation_type: RecommendationType
+    bucket: str
+    key: Optional[str] = None
+    risk_level: RiskLevel
+    requires_approval: bool
+    status: ExecutionActionStatus
+    message: str
+    permitted: bool
+    required_permissions: list[str] = Field(default_factory=list)
+    missing_permissions: list[str] = Field(default_factory=list)
+    simulated: bool = False
 
 
 class ExecuteResponse(BaseModel):
@@ -129,9 +154,12 @@ class ExecuteResponse(BaseModel):
     status: RunStatus
     mode: ExecutionMode
     dry_run: bool
+    eligible: int
     executed: int
     skipped: int
+    blocked: int
     failed: int
+    action_results: list[ExecutionActionResult] = Field(default_factory=list)
     executed_at: datetime
 
 
