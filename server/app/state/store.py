@@ -4,7 +4,14 @@ from threading import Lock
 from typing import Optional
 import uuid
 
-from app.models import ExecuteResponse, Recommendation, RiskScore, RunStatus
+from app.models import (
+    ExecuteResponse,
+    Recommendation,
+    RiskScore,
+    RunStatus,
+    SavingsEstimate,
+    SavingsSummary,
+)
 
 
 @dataclass
@@ -13,6 +20,8 @@ class RunRecord:
     status: RunStatus
     recommendations: list[Recommendation]
     scores: list[RiskScore] = field(default_factory=list)
+    savings_details: list[SavingsEstimate] = field(default_factory=list)
+    savings_summary: Optional[SavingsSummary] = None
     execution: Optional[ExecuteResponse] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -47,12 +56,20 @@ class RunStore:
             reverse=True,
         )
 
-    def set_scores(self, run_id: str, scores: list[RiskScore]) -> Optional[RunRecord]:
+    def set_scores(
+        self,
+        run_id: str,
+        scores: list[RiskScore],
+        savings_details: list[SavingsEstimate],
+        savings_summary: SavingsSummary,
+    ) -> Optional[RunRecord]:
         with self._lock:
             record = self._runs.get(run_id)
             if not record:
                 return None
             record.scores = scores
+            record.savings_details = savings_details
+            record.savings_summary = savings_summary
             record.status = RunStatus.SCORED
             record.updated_at = datetime.now(timezone.utc)
             return record
@@ -66,4 +83,3 @@ class RunStore:
             record.status = RunStatus.EXECUTED
             record.updated_at = datetime.now(timezone.utc)
             return record
-

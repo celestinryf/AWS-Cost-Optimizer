@@ -4,6 +4,7 @@ from .contracts import (
     ExecutionMode,
     Recommendation,
     RecommendationType,
+    RiskFactorScores,
     RiskLevel,
     RiskScore,
     RunDetails,
@@ -11,6 +12,8 @@ from .contracts import (
     RunSummary,
     ScanRequest,
     ScanResponse,
+    SavingsEstimate,
+    SavingsSummary,
     ScoreRequest,
     ScoreResponse,
 )

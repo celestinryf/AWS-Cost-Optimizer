@@ -44,21 +44,28 @@ def score(request: ScoreRequest) -> ScoreResponse:
             detail=f"Run '{request.run_id}' was not found.",
         )
 
-    scores = scoring_service.score(record.recommendations)
-    updated = run_store.set_scores(request.run_id, scores)
+    scoring_result = scoring_service.score(record.recommendations)
+    updated = run_store.set_scores(
+        request.run_id,
+        scoring_result.scores,
+        scoring_result.savings_details,
+        scoring_result.savings_summary,
+    )
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Run '{request.run_id}' was not found.",
         )
 
-    safe_to_automate = len([item for item in scores if item.safe_to_automate])
-    requires_approval = len([item for item in scores if item.requires_approval])
+    safe_to_automate = len([item for item in scoring_result.scores if item.safe_to_automate])
+    requires_approval = len([item for item in scoring_result.scores if item.requires_approval])
 
     return ScoreResponse(
         run_id=updated.run_id,
         status=updated.status,
-        scores=scores,
+        scores=scoring_result.scores,
+        savings_details=scoring_result.savings_details,
+        savings_summary=scoring_result.savings_summary,
         safe_to_automate=safe_to_automate,
         requires_approval=requires_approval,
         scored_at=datetime.now(timezone.utc),
@@ -97,15 +104,18 @@ def list_runs() -> list[RunSummary]:
     response: list[RunSummary] = []
 
     for record in records:
+        estimated_savings = (
+            record.savings_summary.total_monthly_savings
+            if record.savings_summary is not None
+            else sum(recommendation.estimated_monthly_savings for recommendation in record.recommendations)
+        )
+
         response.append(
             RunSummary(
                 run_id=record.run_id,
                 status=record.status,
                 recommendation_count=len(record.recommendations),
-                estimated_monthly_savings=sum(
-                    recommendation.estimated_monthly_savings
-                    for recommendation in record.recommendations
-                ),
+                estimated_monthly_savings=estimated_savings,
                 updated_at=record.updated_at,
             )
         )
@@ -127,8 +137,9 @@ def get_run(run_id: str) -> RunDetails:
         status=record.status,
         recommendations=record.recommendations,
         scores=record.scores,
+        savings_details=record.savings_details,
+        savings_summary=record.savings_summary,
         execution=record.execution,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
-

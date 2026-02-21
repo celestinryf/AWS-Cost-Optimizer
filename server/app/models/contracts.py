@@ -44,12 +44,49 @@ class Recommendation(BaseModel):
     last_modified: Optional[datetime] = None
 
 
+class RiskFactorScores(BaseModel):
+    reversibility: int = Field(ge=0, le=100)
+    data_loss_risk: int = Field(ge=0, le=100)
+    age_confidence: int = Field(ge=0, le=100)
+    size_impact: int = Field(ge=0, le=100)
+    access_confidence: int = Field(ge=0, le=100)
+
+
 class RiskScore(BaseModel):
     recommendation_id: str
     risk_score: int = Field(ge=0, le=100)
     confidence_score: int = Field(ge=0, le=100)
+    impact_score: int = Field(ge=0, le=100)
+    risk_level: RiskLevel
     requires_approval: bool
     safe_to_automate: bool
+    execution_recommendation: str
+    factors: list[str] = Field(default_factory=list)
+    factor_scores: RiskFactorScores
+
+
+class SavingsEstimate(BaseModel):
+    recommendation_id: str
+    current_monthly_cost: float = Field(ge=0)
+    projected_monthly_cost: float = Field(ge=0)
+    monthly_savings: float = Field(ge=0)
+    transition_cost: float = Field(ge=0)
+    minimum_duration_risk: float = Field(ge=0)
+    net_first_month: float
+    net_annual_savings: float
+    break_even_days: Optional[int] = Field(default=None, ge=0)
+    estimate_confidence: str
+    assumptions: list[str] = Field(default_factory=list)
+
+
+class SavingsSummary(BaseModel):
+    total_monthly_savings: float = Field(ge=0)
+    total_annual_savings: float
+    total_transition_costs: float = Field(ge=0)
+    net_first_month: float
+    high_confidence_count: int = Field(ge=0)
+    medium_confidence_count: int = Field(ge=0)
+    low_confidence_count: int = Field(ge=0)
 
 
 class ScanRequest(BaseModel):
@@ -74,6 +111,8 @@ class ScoreResponse(BaseModel):
     run_id: str
     status: RunStatus
     scores: list[RiskScore]
+    savings_details: list[SavingsEstimate]
+    savings_summary: SavingsSummary
     safe_to_automate: int
     requires_approval: int
     scored_at: datetime
@@ -109,7 +148,8 @@ class RunDetails(BaseModel):
     status: RunStatus
     recommendations: list[Recommendation]
     scores: list[RiskScore] = Field(default_factory=list)
+    savings_details: list[SavingsEstimate] = Field(default_factory=list)
+    savings_summary: Optional[SavingsSummary] = None
     execution: Optional[ExecuteResponse] = None
     created_at: datetime
     updated_at: datetime
-
