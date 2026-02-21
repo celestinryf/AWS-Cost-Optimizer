@@ -1,11 +1,16 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
-from app.dependencies import execution_service, run_store, scanner_service, scoring_service
+from app.dependencies import execution_service, rollback_service, run_store, scanner_service, scoring_service
 from app.models import (
+    ExecutionAuditRecord,
     ExecuteRequest,
     ExecuteResponse,
+    RollbackActionStatus,
+    RollbackRequest,
+    RollbackResponse,
+    RollbackStatus,
     RunDetails,
     RunSummary,
     ScanRequest,
@@ -98,6 +103,58 @@ def execute(request: ExecuteRequest) -> ExecuteResponse:
     return result
 
 
+@router.post("/rollback", response_model=RollbackResponse)
+def rollback(request: RollbackRequest) -> RollbackResponse:
+    record = run_store.get(request.run_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run '{request.run_id}' was not found.",
+        )
+
+    execution_id = request.execution_id
+    if not execution_id:
+        if not record.execution:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Run has no execution batch to rollback.",
+            )
+        execution_id = record.execution.execution_id
+
+    audit_records = run_store.list_execution_audit(
+        run_id=request.run_id,
+        execution_id=execution_id,
+        audit_ids=request.audit_ids or None,
+    )
+    if not audit_records:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No audit records found for execution '{execution_id}'.",
+        )
+
+    rollback_result = rollback_service.rollback(
+        request=request,
+        audit_records=audit_records,
+        execution_id=execution_id,
+    )
+
+    if not request.dry_run:
+        status_map = {
+            RollbackActionStatus.ROLLED_BACK: RollbackStatus.ROLLED_BACK,
+            RollbackActionStatus.FAILED: RollbackStatus.FAILED,
+        }
+        for item in rollback_result.results:
+            mapped = status_map.get(item.status)
+            if mapped:
+                run_store.update_rollback_status(
+                    audit_id=item.audit_id,
+                    rollback_status=mapped,
+                    message=item.message,
+                )
+
+    return rollback_result
+
+
 @router.get("/runs", response_model=list[RunSummary])
 def list_runs() -> list[RunSummary]:
     records = run_store.list()
@@ -132,6 +189,8 @@ def get_run(run_id: str) -> RunDetails:
             detail=f"Run '{run_id}' was not found.",
         )
 
+    audit_records = run_store.list_execution_audit(run_id=run_id)
+
     return RunDetails(
         run_id=record.run_id,
         status=record.status,
@@ -140,6 +199,22 @@ def get_run(run_id: str) -> RunDetails:
         savings_details=record.savings_details,
         savings_summary=record.savings_summary,
         execution=record.execution,
+        audit_records=audit_records,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+@router.get("/runs/{run_id}/audit", response_model=list[ExecutionAuditRecord])
+def get_run_audit(
+    run_id: str,
+    execution_id: str | None = Query(default=None),
+) -> list[ExecutionAuditRecord]:
+    record = run_store.get(run_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run '{run_id}' was not found.",
+        )
+
+    return run_store.list_execution_audit(run_id=run_id, execution_id=execution_id)

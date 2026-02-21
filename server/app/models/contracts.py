@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -134,7 +134,15 @@ class ExecutionActionStatus(str, Enum):
     FAILED = "failed"
 
 
+class RollbackStatus(str, Enum):
+    PENDING = "pending"
+    NOT_APPLICABLE = "not_applicable"
+    ROLLED_BACK = "rolled_back"
+    FAILED = "failed"
+
+
 class ExecutionActionResult(BaseModel):
+    audit_id: str
     recommendation_id: str
     recommendation_type: RecommendationType
     bucket: str
@@ -147,9 +155,14 @@ class ExecutionActionResult(BaseModel):
     required_permissions: list[str] = Field(default_factory=list)
     missing_permissions: list[str] = Field(default_factory=list)
     simulated: bool = False
+    pre_change_state: dict[str, Any] = Field(default_factory=dict)
+    post_change_state: Optional[dict[str, Any]] = None
+    rollback_available: bool = False
+    rollback_status: RollbackStatus = RollbackStatus.NOT_APPLICABLE
 
 
 class ExecuteResponse(BaseModel):
+    execution_id: str
     run_id: str
     status: RunStatus
     mode: ExecutionMode
@@ -161,6 +174,65 @@ class ExecuteResponse(BaseModel):
     failed: int
     action_results: list[ExecutionActionResult] = Field(default_factory=list)
     executed_at: datetime
+
+
+class ExecutionAuditRecord(BaseModel):
+    audit_id: str
+    execution_id: str
+    run_id: str
+    recommendation_id: str
+    recommendation_type: RecommendationType
+    bucket: str
+    key: Optional[str] = None
+    action_status: ExecutionActionStatus
+    message: str
+    risk_level: RiskLevel
+    requires_approval: bool
+    permitted: bool
+    required_permissions: list[str] = Field(default_factory=list)
+    missing_permissions: list[str] = Field(default_factory=list)
+    simulated: bool = False
+    pre_change_state: dict[str, Any] = Field(default_factory=dict)
+    post_change_state: Optional[dict[str, Any]] = None
+    rollback_available: bool = False
+    rollback_status: RollbackStatus = RollbackStatus.NOT_APPLICABLE
+    rolled_back_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class RollbackRequest(BaseModel):
+    run_id: str
+    execution_id: Optional[str] = None
+    audit_ids: list[str] = Field(default_factory=list)
+    dry_run: bool = True
+
+
+class RollbackActionStatus(str, Enum):
+    DRY_RUN = "dry_run"
+    ROLLED_BACK = "rolled_back"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class RollbackActionResult(BaseModel):
+    audit_id: str
+    recommendation_id: str
+    recommendation_type: RecommendationType
+    status: RollbackActionStatus
+    message: str
+    rolled_back: bool = False
+
+
+class RollbackResponse(BaseModel):
+    run_id: str
+    execution_id: str
+    dry_run: bool
+    attempted: int
+    rolled_back: int
+    skipped: int
+    failed: int
+    results: list[RollbackActionResult] = Field(default_factory=list)
+    processed_at: datetime
 
 
 class RunSummary(BaseModel):
@@ -179,5 +251,6 @@ class RunDetails(BaseModel):
     savings_details: list[SavingsEstimate] = Field(default_factory=list)
     savings_summary: Optional[SavingsSummary] = None
     execution: Optional[ExecuteResponse] = None
+    audit_records: list[ExecutionAuditRecord] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

@@ -39,6 +39,14 @@ Run data is persisted in SQLite at `data/runs.db` by default.
 - `GET /api/v1/optimizer/runs/{run_id}`
   - Returns full run details.
 
+- `GET /api/v1/optimizer/runs/{run_id}/audit`
+  - Returns execution audit trail (action status, pre/post state, rollback metadata).
+
+- `POST /api/v1/optimizer/rollback`
+  - Rolls back eligible actions from an execution batch.
+  - Supports targeted rollback via `audit_ids`.
+  - Supports `dry_run` to preview rollback results.
+
 ## Typical Flow
 
 1. Call `/optimizer/scan`

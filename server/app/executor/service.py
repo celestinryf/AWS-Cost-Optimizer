@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import os
+import uuid
 
 from app.models import (
     ExecuteRequest,
@@ -9,12 +10,18 @@ from app.models import (
     ExecutionMode,
     Recommendation,
     RecommendationType,
+    RollbackStatus,
     RiskScore,
     RunStatus,
 )
 
 
 class ExecutionService:
+    REVERSIBLE_ACTIONS = {
+        RecommendationType.CHANGE_STORAGE_CLASS,
+        RecommendationType.ADD_LIFECYCLE_POLICY,
+    }
+
     REQUIRED_PERMISSIONS = {
         RecommendationType.CHANGE_STORAGE_CLASS: ["s3:GetObject", "s3:PutObject"],
         RecommendationType.ADD_LIFECYCLE_POLICY: [
@@ -34,6 +41,7 @@ class ExecutionService:
         recommendations: list[Recommendation],
         scores: list[RiskScore],
     ) -> ExecuteResponse:
+        execution_id = str(uuid.uuid4())
         effective_mode, dry_run = self._resolve_mode(request)
         score_by_id = {score.recommendation_id: score for score in scores}
 
@@ -52,6 +60,7 @@ class ExecutionService:
                 skipped += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score_by_id.get(recommendation.id),
                         status=ExecutionActionStatus.SKIPPED,
@@ -60,6 +69,8 @@ class ExecutionService:
                         required_permissions=[],
                         missing_permissions=[],
                         simulated=dry_run,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
                 continue
@@ -69,6 +80,7 @@ class ExecutionService:
                 failed += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=None,
                         status=ExecutionActionStatus.FAILED,
@@ -77,6 +89,8 @@ class ExecutionService:
                         required_permissions=[],
                         missing_permissions=[],
                         simulated=dry_run,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
                 continue
@@ -85,6 +99,7 @@ class ExecutionService:
                 skipped += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.SKIPPED,
@@ -93,6 +108,8 @@ class ExecutionService:
                         required_permissions=[],
                         missing_permissions=[],
                         simulated=dry_run,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
                 continue
@@ -107,6 +124,7 @@ class ExecutionService:
                 blocked += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.BLOCKED,
@@ -115,6 +133,8 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=missing_permissions,
                         simulated=dry_run,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
                 continue
@@ -123,6 +143,7 @@ class ExecutionService:
                 blocked += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.BLOCKED,
@@ -131,6 +152,8 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=missing_permissions,
                         simulated=dry_run,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
                 continue
@@ -139,6 +162,7 @@ class ExecutionService:
                 executed += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.DRY_RUN,
@@ -147,6 +171,8 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=[],
                         simulated=True,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=self._capture_post_change_state(recommendation, simulated=True),
                     )
                 )
                 continue
@@ -156,6 +182,7 @@ class ExecutionService:
                 executed += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.EXECUTED,
@@ -164,12 +191,15 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=[],
                         simulated=False,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=self._capture_post_change_state(recommendation, simulated=False),
                     )
                 )
             else:
                 failed += 1
                 action_results.append(
                     self._result(
+                        audit_id=str(uuid.uuid4()),
                         recommendation=recommendation,
                         score=score,
                         status=ExecutionActionStatus.FAILED,
@@ -178,10 +208,13 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=[],
                         simulated=False,
+                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        post_change_state=None,
                     )
                 )
 
         return ExecuteResponse(
+            execution_id=execution_id,
             run_id=request.run_id,
             status=RunStatus.EXECUTED,
             mode=effective_mode,
@@ -245,6 +278,7 @@ class ExecutionService:
 
     def _result(
         self,
+        audit_id: str,
         recommendation: Recommendation,
         score: RiskScore | None,
         status: ExecutionActionStatus,
@@ -253,11 +287,20 @@ class ExecutionService:
         required_permissions: list[str],
         missing_permissions: list[str],
         simulated: bool,
+        pre_change_state: dict,
+        post_change_state: dict | None,
     ) -> ExecutionActionResult:
         requires_approval = score.requires_approval if score else True
         risk_level = score.risk_level if score else recommendation.risk_level
+        rollback_available = (
+            status == ExecutionActionStatus.EXECUTED
+            and recommendation.recommendation_type in self.REVERSIBLE_ACTIONS
+            and not simulated
+        )
+        rollback_status = RollbackStatus.PENDING if rollback_available else RollbackStatus.NOT_APPLICABLE
 
         return ExecutionActionResult(
+            audit_id=audit_id,
             recommendation_id=recommendation.id,
             recommendation_type=recommendation.recommendation_type,
             bucket=recommendation.bucket,
@@ -270,5 +313,46 @@ class ExecutionService:
             required_permissions=required_permissions,
             missing_permissions=missing_permissions,
             simulated=simulated,
+            pre_change_state=pre_change_state,
+            post_change_state=post_change_state,
+            rollback_available=rollback_available,
+            rollback_status=rollback_status,
         )
 
+    def _capture_pre_change_state(self, recommendation: Recommendation) -> dict:
+        last_modified = recommendation.last_modified.isoformat() if recommendation.last_modified else None
+        return {
+            "bucket": recommendation.bucket,
+            "key": recommendation.key,
+            "storage_class": recommendation.storage_class,
+            "size_bytes": recommendation.size_bytes,
+            "last_modified": last_modified,
+            "risk_level": recommendation.risk_level.value,
+        }
+
+    def _capture_post_change_state(self, recommendation: Recommendation, simulated: bool) -> dict:
+        if recommendation.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
+            return {
+                "action": "change_storage_class",
+                "target": recommendation.recommended_action,
+                "simulated": simulated,
+            }
+        if recommendation.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
+            return {
+                "action": "add_lifecycle_policy",
+                "target": recommendation.recommended_action,
+                "simulated": simulated,
+            }
+        if recommendation.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD:
+            return {
+                "action": "delete_incomplete_upload",
+                "target": recommendation.key,
+                "simulated": simulated,
+            }
+        if recommendation.recommendation_type == RecommendationType.DELETE_STALE_OBJECT:
+            return {
+                "action": "delete_stale_object",
+                "target": recommendation.key,
+                "simulated": simulated,
+            }
+        return {"action": "unknown", "simulated": simulated}

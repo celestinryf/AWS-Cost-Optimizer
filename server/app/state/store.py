@@ -9,7 +9,10 @@ import uuid
 
 from app.models import (
     ExecuteResponse,
+    ExecutionActionResult,
+    ExecutionAuditRecord,
     Recommendation,
+    RollbackStatus,
     RiskScore,
     RunStatus,
     SavingsEstimate,
@@ -183,7 +186,93 @@ class RunStore:
                         run_id,
                     ),
                 )
+                self._insert_execution_audit(conn, run_id, execution.execution_id, execution.action_results)
             return record
+
+    def list_execution_audit(
+        self,
+        run_id: str,
+        execution_id: Optional[str] = None,
+        audit_ids: Optional[list[str]] = None,
+    ) -> list[ExecutionAuditRecord]:
+        query = """
+            SELECT
+                audit_id,
+                execution_id,
+                run_id,
+                recommendation_id,
+                recommendation_type,
+                bucket,
+                key,
+                action_status,
+                message,
+                risk_level,
+                requires_approval,
+                permitted,
+                required_permissions_json,
+                missing_permissions_json,
+                simulated,
+                pre_change_state_json,
+                post_change_state_json,
+                rollback_available,
+                rollback_status,
+                rolled_back_at,
+                created_at
+            FROM execution_audit
+            WHERE run_id = ?
+        """
+        params: list = [run_id]
+
+        if execution_id:
+            query += " AND execution_id = ?"
+            params.append(execution_id)
+
+        if audit_ids:
+            placeholders = ",".join(["?"] * len(audit_ids))
+            query += f" AND audit_id IN ({placeholders})"
+            params.extend(audit_ids)
+
+        query += " ORDER BY created_at DESC"
+
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_audit_record(row) for row in rows]
+
+    def update_rollback_status(
+        self,
+        audit_id: str,
+        rollback_status: RollbackStatus,
+        message: Optional[str] = None,
+    ) -> bool:
+        with self._lock:
+            rolled_back_at = datetime.now(timezone.utc).isoformat() if rollback_status == RollbackStatus.ROLLED_BACK else None
+            with self._connect() as conn:
+                run_row = conn.execute(
+                    "SELECT run_id FROM execution_audit WHERE audit_id = ?",
+                    (audit_id,),
+                ).fetchone()
+                cursor = conn.execute(
+                    """
+                    UPDATE execution_audit
+                    SET
+                        rollback_status = ?,
+                        rolled_back_at = COALESCE(?, rolled_back_at),
+                        message = COALESCE(?, message)
+                    WHERE audit_id = ?
+                    """,
+                    (
+                        rollback_status.value,
+                        rolled_back_at,
+                        message,
+                        audit_id,
+                    ),
+                )
+                if cursor.rowcount > 0 and run_row:
+                    conn.execute(
+                        "UPDATE runs SET updated_at = ? WHERE run_id = ?",
+                        (datetime.now(timezone.utc).isoformat(), run_row["run_id"]),
+                    )
+                return cursor.rowcount > 0
 
     def _initialize(self) -> None:
         with self._connect() as conn:
@@ -206,6 +295,46 @@ class RunStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_runs_updated_at
                 ON runs(updated_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_audit (
+                    audit_id TEXT PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    recommendation_id TEXT NOT NULL,
+                    recommendation_type TEXT NOT NULL,
+                    bucket TEXT NOT NULL,
+                    key TEXT,
+                    action_status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    requires_approval INTEGER NOT NULL,
+                    permitted INTEGER NOT NULL,
+                    required_permissions_json TEXT NOT NULL,
+                    missing_permissions_json TEXT NOT NULL,
+                    simulated INTEGER NOT NULL,
+                    pre_change_state_json TEXT NOT NULL,
+                    post_change_state_json TEXT,
+                    rollback_available INTEGER NOT NULL,
+                    rollback_status TEXT NOT NULL,
+                    rolled_back_at TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_execution_audit_run_id
+                ON execution_audit(run_id, created_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_execution_audit_execution_id
+                ON execution_audit(execution_id)
                 """
             )
 
@@ -251,3 +380,87 @@ class RunStore:
         if not payload:
             return None
         return model_type.model_validate(json.loads(payload))
+
+    def _insert_execution_audit(
+        self,
+        conn: sqlite3.Connection,
+        run_id: str,
+        execution_id: str,
+        action_results: list[ExecutionActionResult],
+    ) -> None:
+        for action in action_results:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO execution_audit (
+                    audit_id,
+                    execution_id,
+                    run_id,
+                    recommendation_id,
+                    recommendation_type,
+                    bucket,
+                    key,
+                    action_status,
+                    message,
+                    risk_level,
+                    requires_approval,
+                    permitted,
+                    required_permissions_json,
+                    missing_permissions_json,
+                    simulated,
+                    pre_change_state_json,
+                    post_change_state_json,
+                    rollback_available,
+                    rollback_status,
+                    rolled_back_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    action.audit_id,
+                    execution_id,
+                    run_id,
+                    action.recommendation_id,
+                    action.recommendation_type.value,
+                    action.bucket,
+                    action.key,
+                    action.status.value,
+                    action.message,
+                    action.risk_level.value,
+                    int(action.requires_approval),
+                    int(action.permitted),
+                    json.dumps(action.required_permissions),
+                    json.dumps(action.missing_permissions),
+                    int(action.simulated),
+                    json.dumps(action.pre_change_state),
+                    json.dumps(action.post_change_state) if action.post_change_state is not None else None,
+                    int(action.rollback_available),
+                    action.rollback_status.value,
+                    None,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def _row_to_audit_record(self, row: sqlite3.Row) -> ExecutionAuditRecord:
+        return ExecutionAuditRecord(
+            audit_id=row["audit_id"],
+            execution_id=row["execution_id"],
+            run_id=row["run_id"],
+            recommendation_id=row["recommendation_id"],
+            recommendation_type=row["recommendation_type"],
+            bucket=row["bucket"],
+            key=row["key"],
+            action_status=row["action_status"],
+            message=row["message"],
+            risk_level=row["risk_level"],
+            requires_approval=bool(row["requires_approval"]),
+            permitted=bool(row["permitted"]),
+            required_permissions=json.loads(row["required_permissions_json"]) if row["required_permissions_json"] else [],
+            missing_permissions=json.loads(row["missing_permissions_json"]) if row["missing_permissions_json"] else [],
+            simulated=bool(row["simulated"]),
+            pre_change_state=json.loads(row["pre_change_state_json"]) if row["pre_change_state_json"] else {},
+            post_change_state=json.loads(row["post_change_state_json"]) if row["post_change_state_json"] else None,
+            rollback_available=bool(row["rollback_available"]),
+            rollback_status=row["rollback_status"],
+            rolled_back_at=datetime.fromisoformat(row["rolled_back_at"]) if row["rolled_back_at"] else None,
+            created_at=datetime.fromisoformat(row["created_at"]),
+        )
