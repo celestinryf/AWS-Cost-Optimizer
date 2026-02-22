@@ -87,6 +87,7 @@ jobs:
           context: ./server
           file: ./server/Dockerfile
           push: false
+          load: true
           tags: aws-cost-optimizer-api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

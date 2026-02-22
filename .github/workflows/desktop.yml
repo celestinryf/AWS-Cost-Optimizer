@@ -94,13 +94,31 @@ jobs:
         working-directory: client
         run: npm ci
 
-      - name: Generate Tauri icons (placeholder)
-        # Skip if icons already exist; in a real project supply real icons.
+      - name: Generate Tauri icons
         shell: bash
+        working-directory: client
         run: |
-          if [ ! -f client/src-tauri/icons/icon.icns ]; then
-            echo "No icons found — skipping icon generation (add real icons before shipping)"
-          fi
+          mkdir -p src-tauri/icons
+          # Build a 1024x1024 solid-blue PNG using Python stdlib (no pip deps).
+          # tauri icon will convert it into all required formats (png, icns, ico).
+          python3 << 'PYEOF'
+          import struct, zlib
+          def chunk(tag, data):
+              crc = zlib.crc32(tag + data) & 0xffffffff
+              return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', crc)
+          n = 1024
+          rows = b''.join(b'\x00' + bytes([37, 99, 235]) * n for _ in range(n))
+          png = (
+              b'\x89PNG\r\n\x1a\n'
+              + chunk(b'IHDR', struct.pack('>IIBBBBB', n, n, 8, 2, 0, 0, 0))
+              + chunk(b'IDAT', zlib.compress(rows, 9))
+              + chunk(b'IEND', b'')
+          )
+          open('icon-src.png', 'wb').write(png)
+          print("Generated icon-src.png")
+          PYEOF
+          npm run tauri -- icon icon-src.png
+          rm -f icon-src.png
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
