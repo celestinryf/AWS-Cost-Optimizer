@@ -1,0 +1,48 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+*.egg
+
+# Coverage / test artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+*.coverage.*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node / Tauri
+node_modules/
+client/node_modules/
+client/src-tauri/target/
+
+# SQLite data
+data/*.db
+server/data/
+
+# PyInstaller
+dist/
+*.spec
