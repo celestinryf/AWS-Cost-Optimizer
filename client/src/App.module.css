@@ -1,0 +1,28 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-6);
+  height: 48px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  -webkit-app-region: drag; /* macOS drag region */
+}
+
+.logo {
+  font-size: var(--font-md);
+  font-weight: 600;
+  color: var(--color-text);
+  letter-spacing: -0.01em;
+}
+
+.main {
+  flex: 1;
+  overflow-y: auto;
+}

@@ -1,0 +1,155 @@
+/* -----------------------------------------------------------------------
+   CSS reset + design tokens
+   ----------------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  /* Neutral palette */
+  --color-bg:           #0f1117;
+  --color-surface:      #1a1d27;
+  --color-surface-2:    #22263a;
+  --color-border:       #2e3250;
+  --color-text:         #e2e8f0;
+  --color-text-muted:   #8892a4;
+  --color-text-faint:   #4a5568;
+
+  /* Brand */
+  --color-accent:       #4f8ef7;
+  --color-accent-hover: #3b7de8;
+
+  /* Status */
+  --color-success:      #22c55e;
+  --color-warning:      #f59e0b;
+  --color-danger:       #ef4444;
+  --color-info:         #38bdf8;
+
+  /* Risk */
+  --color-risk-low:     #22c55e;
+  --color-risk-medium:  #f59e0b;
+  --color-risk-high:    #ef4444;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Type scale */
+  --font-xs:  11px;
+  --font-sm:  13px;
+  --font-md:  14px;
+  --font-lg:  16px;
+  --font-xl:  20px;
+  --font-2xl: 24px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-bg:           #f0f2f5;
+    --color-surface:      #ffffff;
+    --color-surface-2:    #f8fafc;
+    --color-border:       #d1d5db;
+    --color-text:         #111827;
+    --color-text-muted:   #6b7280;
+    --color-text-faint:   #9ca3af;
+  }
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: var(--font-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--font-sm);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  transition: opacity 0.15s, background 0.15s;
+}
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Primary button */
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--color-accent-hover); }
+
+/* Secondary button */
+.btn-secondary {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--color-border); }
+
+/* Danger button */
+.btn-danger {
+  background: var(--color-danger);
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) { opacity: 0.85; }
+
+/* Table base */
+table { width: 100%; border-collapse: collapse; font-size: var(--font-sm); }
+th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-muted);
+  font-weight: 500;
+  font-size: var(--font-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--color-border);
+}
+td {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+
+/* Input / select */
+input, select, textarea {
+  font-family: inherit;
+  font-size: var(--font-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--color-accent);
+}
+
+/* Utility classes */
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: var(--font-xs); }
+.text-muted { color: var(--color-text-muted); }
+.text-faint { color: var(--color-text-faint); }
