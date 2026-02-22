@@ -1,6 +1,8 @@
 .PHONY: install install-dev test test-unit test-integration test-cov run build docker-run clean
 
-PYTHON   := python3
+# Prefer the repo-root .venv, then a local venv, then whatever python3 is on PATH.
+VENV     := $(wildcard ../.venv/bin/python3 venv/bin/python3)
+PYTHON   := $(if $(VENV),$(firstword $(VENV)),python3)
 PIP      := $(PYTHON) -m pip
 PYTEST   := $(PYTHON) -m pytest
 UVICORN  := $(PYTHON) -m uvicorn
