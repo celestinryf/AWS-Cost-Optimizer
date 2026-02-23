@@ -22,6 +22,7 @@ venv/
 htmlcov/
 .pytest_cache/
 *.coverage.*
+coverage.xml
 
 # Environment
 .env
