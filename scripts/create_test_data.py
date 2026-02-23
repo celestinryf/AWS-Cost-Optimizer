@@ -12,12 +12,12 @@ def random_string(length = 10):
 def create_bucket(s3_client):
     """Create the test bucket if it doesn't exist"""
     try:
-        if REGION == "us-west-2":
-            s3_client.create_bucket(Bucket = BUCKET_NAME)
+        if REGION == "us-east-1":
+            s3_client.create_bucket(Bucket=BUCKET_NAME)
         else:
             s3_client.create_bucket(
-                bucket = BUCKET_NAME,
-                CreateBucketConfig = {"LocationConstraint" : REGION}
+                Bucket=BUCKET_NAME,
+                CreateBucketConfiguration={"LocationConstraint": REGION},
             )
 
         print(f"Created Bucket: {BUCKET_NAME}")

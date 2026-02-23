@@ -41,10 +41,11 @@ export default function Dashboard() {
   }, [loadRuns]);
 
   async function handleScan(req: ScanRequest) {
+    setShowScan(false); // close modal immediately so user sees the progress banner
     setScanning(true);
+    setError(null);
     try {
       const resp = await api.scan(req);
-      setShowScan(false);
       await loadRuns();
       navigate(`/runs/${resp.run_id}`);
     } catch (e) {
@@ -62,6 +63,12 @@ export default function Dashboard() {
           + New Scan
         </button>
       </div>
+
+      {scanning && (
+        <div className={styles.scanningBanner}>
+          Scanning S3 buckets — this may take a moment for large buckets…
+        </div>
+      )}
 
       {error && <div className={styles.error}>{error}</div>}
 

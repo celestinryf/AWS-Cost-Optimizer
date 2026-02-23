@@ -5,12 +5,12 @@
 export type RunStatus = "scanned" | "scored" | "executed";
 
 export type RecommendationType =
-  | "CHANGE_STORAGE_CLASS"
-  | "ADD_LIFECYCLE_POLICY"
-  | "DELETE_INCOMPLETE_UPLOAD"
-  | "DELETE_STALE_OBJECT";
+  | "change_storage_class"
+  | "add_lifecycle_policy"
+  | "delete_incomplete_upload"
+  | "delete_stale_object";
 
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+export type RiskLevel = "low" | "medium" | "high";
 
 export type ExecutionMode = "dry_run" | "safe" | "standard" | "full";
 
@@ -66,24 +66,23 @@ export interface RiskScore {
 
 export interface SavingsEstimate {
   recommendation_id: string;
-  recommendation_type: RecommendationType;
-  bucket: string;
-  key: string | null;
   current_monthly_cost: number;
   projected_monthly_cost: number;
   monthly_savings: number;
-  annual_savings: number;
   transition_cost: number;
-  net_first_month_savings: number;
+  minimum_duration_risk: number;
+  net_first_month: number;
   net_annual_savings: number;
   break_even_days: number | null;
-  confidence: "high" | "medium" | "low";
+  estimate_confidence: "high" | "medium" | "low";
+  assumptions: string[];
 }
 
 export interface SavingsSummary {
   total_monthly_savings: number;
   total_annual_savings: number;
-  total_transition_cost: number;
+  total_transition_costs: number;
+  net_first_month: number;
   net_annual_savings: number;
   high_confidence_count: number;
   medium_confidence_count: number;
@@ -177,7 +176,7 @@ export interface RunDetails {
 export interface ScanRequest {
   include_buckets: string[];
   exclude_buckets: string[];
-  max_objects: number;
+  max_objects_per_bucket: number;
 }
 
 export interface ScoreRequest {

@@ -25,7 +25,7 @@ export default function ScanModal({ onConfirm, onClose, loading }: Props) {
     onConfirm({
       include_buckets: parseLines(include),
       exclude_buckets: parseLines(exclude),
-      max_objects: maxObjects,
+      max_objects_per_bucket: maxObjects,
     });
   }
 

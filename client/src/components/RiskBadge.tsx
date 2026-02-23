@@ -6,9 +6,10 @@ interface Props {
 }
 
 export default function RiskBadge({ level }: Props) {
+  const label = level.charAt(0).toUpperCase() + level.slice(1);
   return (
-    <span className={`${styles.badge} ${styles[level.toLowerCase()]}`}>
-      {level}
+    <span className={`${styles.badge} ${styles[level]}`}>
+      {label}
     </span>
   );
 }

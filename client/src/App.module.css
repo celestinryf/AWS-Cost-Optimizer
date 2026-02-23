@@ -48,3 +48,43 @@
   flex: 1;
   overflow-y: auto;
 }
+
+/* Backend offline indicator in header nav */
+.offlinePill {
+  font-size: var(--font-xs);
+  color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 99px;
+  padding: 2px var(--space-2);
+  white-space: nowrap;
+}
+
+/* Full-width banner below the header */
+.offlineBanner {
+  background: rgba(239, 68, 68, 0.08);
+  border-bottom: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--color-danger);
+  font-size: var(--font-sm);
+  padding: var(--space-2) var(--space-6);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+.offlineBanner a {
+  color: var(--color-danger);
+  text-decoration: underline;
+}
+
+.retryBtn {
+  background: none;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: var(--color-danger);
+  font-size: var(--font-xs);
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.retryBtn:hover { background: rgba(239, 68, 68, 0.12); }
