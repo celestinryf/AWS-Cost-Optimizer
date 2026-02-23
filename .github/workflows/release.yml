@@ -110,13 +110,29 @@ jobs:
           npm run tauri -- icon icon-src.png
           rm -f icon-src.png
 
+      # ---- Inject signing pubkey ----
+      # tauri.conf.json ships with pubkey="" so that desktop CI builds (which
+      # don't have the signing secret) can compile without signing. For releases
+      # we stamp the real pubkey in here so tauri-action embeds it in the binary
+      # and generates a correctly-signed latest.json.
+      - name: Stamp updater pubkey into tauri.conf.json
+        shell: python3 {0}
+        run: |
+          import json, pathlib
+          PUBKEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5MUZERDIxNkNBMzkwNTEKUldSUmtLTnNJZDBmeWZZUTJBTlFiQjFLSVlEOEhSUi9hUyt3L3dSWFJNaFpqdS8rTVlSSnROLzUK"
+          p = pathlib.Path("client/src-tauri/tauri.conf.json")
+          cfg = json.loads(p.read_text())
+          cfg.setdefault("plugins", {}).setdefault("updater", {})["pubkey"] = PUBKEY
+          p.write_text(json.dumps(cfg, indent=2) + "\n")
+          print("Pubkey stamped.")
+
       # ---- Build + Publish release ----
       # tauri-action creates the GitHub Release (draft=false), attaches all
       # platform installers, and generates latest.json for the auto-updater.
       #
       # Required secrets:
       #   TAURI_SIGNING_PRIVATE_KEY        — from: tauri signer generate
-      #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — passphrase you chose
+      #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — passphrase you chose (empty if none)
       #
       # Optional (macOS notarization):
       #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD
