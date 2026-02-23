@@ -38,6 +38,7 @@ htmlcov/
 node_modules/
 client/node_modules/
 client/src-tauri/target/
+client/src-tauri/gen/
 
 # SQLite data
 data/*.db
@@ -45,4 +46,4 @@ server/data/
 
 # PyInstaller
 dist/
-*.spec
+server/dist/
