@@ -88,3 +88,29 @@
   flex-shrink: 0;
 }
 .retryBtn:hover { background: rgba(239, 68, 68, 0.12); }
+
+/* Update-available banner */
+.updateBanner {
+  background: rgba(79, 142, 247, 0.08);
+  border-bottom: 1px solid rgba(79, 142, 247, 0.25);
+  color: var(--color-accent);
+  font-size: var(--font-sm);
+  padding: var(--space-2) var(--space-6);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.updateBtn {
+  background: none;
+  border: 1px solid rgba(79, 142, 247, 0.4);
+  color: var(--color-accent);
+  font-size: var(--font-xs);
+  padding: 2px var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.updateBtn:hover { background: rgba(79, 142, 247, 0.12); }
+.updateBtn:disabled { opacity: 0.6; cursor: not-allowed; }

@@ -16,8 +16,16 @@ target-triple suffix so Tauri can bundle it as a sidecar:
 """
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files  # noqa: F821
 
 HERE = Path(SPECPATH)  # noqa: F821  (PyInstaller provides SPECPATH)
+
+# botocore bundles its endpoint data as package data; PyInstaller's static
+# analysis misses it, so we collect it explicitly.
+_extra_datas = (
+    collect_data_files("botocore")
+    + collect_data_files("boto3")
+)
 
 a = Analysis(
     [str(HERE / "bundle_entry.py")],
@@ -25,6 +33,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(HERE / "app"), "app"),
+        *_extra_datas,
     ],
     hiddenimports=[
         # uvicorn internals not caught by static analysis

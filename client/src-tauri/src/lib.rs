@@ -5,6 +5,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
 #[cfg(not(dev))]
 use tauri_plugin_shell::ShellExt;
+#[cfg(not(dev))]
+use tauri_plugin_updater::UpdaterExt;
 
 // ---------------------------------------------------------------------------
 // Credential types
@@ -133,6 +135,48 @@ fn save_credentials(
 }
 
 // ---------------------------------------------------------------------------
+// Updater commands (production-only; dev builds skip the update check)
+// ---------------------------------------------------------------------------
+
+/// Returns the new version string if an update is available, or `None`.
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(not(dev))]
+    {
+        let update = app
+            .updater()
+            .map_err(|e| e.to_string())?
+            .check()
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(update.map(|u| u.version.to_string()));
+    }
+    #[cfg(dev)]
+    Ok(None)
+}
+
+/// Downloads and installs the pending update. The app must be restarted
+/// afterwards; Tauri handles the restart automatically after install.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    #[cfg(not(dev))]
+    {
+        let update = app
+            .updater()
+            .map_err(|e| e.to_string())?
+            .check()
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(u) = update {
+            u.download_and_install(|_, _| {}, || {})
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -140,8 +184,14 @@ fn save_credentials(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(SidecarState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![load_credentials, save_credentials])
+        .invoke_handler(tauri::generate_handler![
+            load_credentials,
+            save_credentials,
+            check_for_updates,
+            install_update,
+        ])
         .setup(|app| {
             // Spawn the sidecar in production builds only. In dev mode the
             // server is assumed to be running separately
