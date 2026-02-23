@@ -1,0 +1,133 @@
+.page {
+  padding: var(--space-8) var(--space-8);
+  max-width: 600px;
+}
+
+.pageHeader {
+  margin-bottom: var(--space-6);
+}
+
+.heading {
+  font-size: var(--font-2xl);
+  font-weight: 700;
+  margin-bottom: var(--space-2);
+}
+
+.sub {
+  color: var(--color-text-muted);
+  font-size: var(--font-sm);
+}
+
+/* Card container */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+
+/* Form field */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--font-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.req {
+  color: var(--color-danger);
+  margin-left: 2px;
+}
+
+.opt {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+/* Input fills remaining space in a row */
+.input {
+  width: 100%;
+}
+
+/* Row with input + show/hide button */
+.inputRow {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.inputRow .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.revealBtn {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-xs);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.revealBtn:hover {
+  color: var(--color-text);
+  background: var(--color-border);
+}
+
+/* Feedback banners */
+.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-danger);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-sm);
+}
+
+.success {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-sm);
+}
+
+/* Action row */
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* IAM hint */
+.hint {
+  font-size: var(--font-sm);
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.hintCode {
+  color: var(--color-text-faint);
+}
+
+.hintCode code {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--font-xs);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+}
