@@ -126,7 +126,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: client
-          args: --target ${{ matrix.target }}
+          # Override pubkey to empty so Tauri doesn't require TAURI_SIGNING_PRIVATE_KEY
+          # in CI. Signed updater artifacts are only produced by release.yml (via the
+          # TAURI_SIGNING_PRIVATE_KEY secret) where the real pubkey stays in tauri.conf.json.
+          args: >-
+            --target ${{ matrix.target }}
+            --config '{"plugins":{"updater":{"pubkey":""}}}'
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
