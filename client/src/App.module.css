@@ -7,6 +7,7 @@
 .header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 var(--space-6);
   height: 48px;
   background: var(--color-surface);
@@ -20,6 +21,27 @@
   font-weight: 600;
   color: var(--color-text);
   letter-spacing: -0.01em;
+  text-decoration: none;
+  -webkit-app-region: no-drag;
+}
+.logo:hover { text-decoration: none; }
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  -webkit-app-region: no-drag;
+}
+
+.navLink {
+  font-size: var(--font-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.navLink:hover {
+  color: var(--color-text);
+  text-decoration: none;
 }
 
 .main {
