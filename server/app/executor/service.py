@@ -1,6 +1,10 @@
 from datetime import datetime, timezone
+from typing import Any
 import os
 import uuid
+
+import boto3
+from botocore.exceptions import ClientError
 
 from app.models import (
     ExecuteRequest,
@@ -17,6 +21,15 @@ from app.models import (
 
 
 class ExecutionService:
+    def __init__(self, s3_client: Any = None) -> None:
+        self._s3 = s3_client
+
+    @property
+    def s3(self) -> Any:
+        if self._s3 is None:
+            self._s3 = boto3.client("s3")
+        return self._s3
+
     REVERSIBLE_ACTIONS = {
         RecommendationType.CHANGE_STORAGE_CLASS,
         RecommendationType.ADD_LIFECYCLE_POLICY,
@@ -177,7 +190,8 @@ class ExecutionService:
                 )
                 continue
 
-            success, message = self._execute_action(recommendation)
+            success, message, extra_state = self._execute_action(recommendation)
+            pre_state = {**self._capture_pre_change_state(recommendation), **extra_state}
             if success:
                 executed += 1
                 action_results.append(
@@ -191,7 +205,7 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=[],
                         simulated=False,
-                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        pre_change_state=pre_state,
                         post_change_state=self._capture_post_change_state(recommendation, simulated=False),
                     )
                 )
@@ -208,7 +222,7 @@ class ExecutionService:
                         required_permissions=required_permissions,
                         missing_permissions=[],
                         simulated=False,
-                        pre_change_state=self._capture_pre_change_state(recommendation),
+                        pre_change_state=pre_state,
                         post_change_state=None,
                     )
                 )
@@ -265,16 +279,79 @@ class ExecutionService:
         )
         return {item.strip() for item in raw.split(",") if item.strip()}
 
-    def _execute_action(self, recommendation: Recommendation) -> tuple[bool, str]:
-        if recommendation.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
-            return True, "Storage class transition executed."
-        if recommendation.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
-            return True, "Lifecycle policy update executed."
-        if recommendation.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD:
-            return True, "Incomplete multipart uploads aborted."
-        if recommendation.recommendation_type == RecommendationType.DELETE_STALE_OBJECT:
-            return True, "Stale object deletion executed."
-        return False, "Unsupported recommendation type."
+    def _execute_action(self, recommendation: Recommendation) -> tuple[bool, str, dict]:
+        rec = recommendation
+        try:
+            if rec.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
+                target = rec.recommended_action.split()[-1]
+                self.s3.copy_object(
+                    Bucket=rec.bucket,
+                    Key=rec.key,
+                    CopySource={"Bucket": rec.bucket, "Key": rec.key},
+                    StorageClass=target,
+                    MetadataDirective="COPY",
+                    TaggingDirective="COPY",
+                )
+                return True, f"Transitioned {rec.key} to {target}.", {}
+
+            if rec.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
+                # Capture existing rules before mutating (needed for rollback)
+                try:
+                    existing_rules = self.s3.get_bucket_lifecycle_configuration(
+                        Bucket=rec.bucket
+                    )["Rules"]
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "NoSuchLifecycleConfiguration":
+                        existing_rules = None
+                    else:
+                        raise
+
+                extra = {"existing_lifecycle_rules": existing_rules}
+
+                new_rules = [
+                    {
+                        "ID": "aws-cost-optimizer-archive",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "Transitions": [{"Days": 90, "StorageClass": "GLACIER_IR"}],
+                    },
+                    {
+                        "ID": "aws-cost-optimizer-multipart-cleanup",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+                    },
+                ]
+                existing_ids = {r["ID"] for r in (existing_rules or [])}
+                merged = (existing_rules or []) + [
+                    r for r in new_rules if r["ID"] not in existing_ids
+                ]
+                self.s3.put_bucket_lifecycle_configuration(
+                    Bucket=rec.bucket,
+                    LifecycleConfiguration={"Rules": merged},
+                )
+                return True, f"Applied lifecycle policy to {rec.bucket}.", extra
+
+            if rec.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD:
+                # upload_id stored in storage_class field by scanner
+                upload_id = rec.storage_class or ""
+                self.s3.abort_multipart_upload(
+                    Bucket=rec.bucket,
+                    Key=rec.key,
+                    UploadId=upload_id,
+                )
+                return True, f"Aborted incomplete upload for {rec.key}.", {}
+
+            if rec.recommendation_type == RecommendationType.DELETE_STALE_OBJECT:
+                self.s3.delete_object(Bucket=rec.bucket, Key=rec.key)
+                return True, f"Deleted stale object {rec.key}.", {}
+
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            msg = e.response["Error"]["Message"]
+            return False, f"S3 error ({code}): {msg}", {}
+
+        return False, "Unsupported recommendation type.", {}
 
     def _result(
         self,

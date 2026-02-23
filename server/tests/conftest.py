@@ -8,7 +8,9 @@ Key design decision:
   Both locations must be patched independently.
 """
 
+import boto3
 import pytest
+from moto import mock_aws
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,32 @@ from app.scanner.service import ScannerService
 from app.scoring.service import ScoringService
 from app.executor.service import ExecutionService
 from app.executor.rollback import RollbackService
+
+
+@pytest.fixture(autouse=True)
+def aws_credentials(monkeypatch):
+    """Set fake AWS credentials so boto3 clients don't fail to initialize."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+
+
+@pytest.fixture(autouse=True)
+def s3_mock(aws_credentials):
+    """Wrap every test in a moto S3 mock with pre-populated test resources.
+
+    moto patches at the HTTP intercept layer, so all boto3 clients (including
+    lazily created and cached module-level ones) route to this backend.
+    Each test starts with a fresh, isolated S3 state.
+    """
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-bucket")
+        # Objects referenced by executor and rollback unit tests
+        s3.put_object(Bucket="test-bucket", Key="test/key.parquet", Body=b"x" * 1024)
+        s3.put_object(Bucket="test-bucket", Key="test/key", Body=b"x" * 512)
+        yield s3
 
 
 @pytest.fixture(autouse=True)

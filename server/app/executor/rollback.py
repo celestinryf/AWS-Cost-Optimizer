@@ -1,4 +1,8 @@
 from datetime import datetime, timezone
+from typing import Any
+
+import boto3
+from botocore.exceptions import ClientError
 
 from app.models import (
     ExecutionActionStatus,
@@ -12,6 +16,15 @@ from app.models import (
 
 
 class RollbackService:
+    def __init__(self, s3_client: Any = None) -> None:
+        self._s3 = s3_client
+
+    @property
+    def s3(self) -> Any:
+        if self._s3 is None:
+            self._s3 = boto3.client("s3")
+        return self._s3
+
     REVERSIBLE_ACTIONS = {
         RecommendationType.CHANGE_STORAGE_CLASS,
         RecommendationType.ADD_LIFECYCLE_POLICY,
@@ -110,12 +123,38 @@ class RollbackService:
         if not record.pre_change_state:
             return False, "Missing pre-change state snapshot."
 
-        if record.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
-            target = record.pre_change_state.get("storage_class") or "STANDARD"
-            return True, f"Rolled back storage class to {target}."
+        bucket = record.pre_change_state.get("bucket") or record.bucket
+        key = record.pre_change_state.get("key") or record.key
 
-        if record.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
-            return True, "Rolled back lifecycle policy changes."
+        try:
+            if record.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
+                original_class = record.pre_change_state.get("storage_class") or "STANDARD"
+                self.s3.copy_object(
+                    Bucket=bucket,
+                    Key=key,
+                    CopySource={"Bucket": bucket, "Key": key},
+                    StorageClass=original_class,
+                    MetadataDirective="COPY",
+                    TaggingDirective="COPY",
+                )
+                return True, f"Restored {key} to {original_class}."
+
+            if record.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
+                original_rules = record.pre_change_state.get("existing_lifecycle_rules")
+                if original_rules is None:
+                    self.s3.delete_bucket_lifecycle(Bucket=bucket)
+                    return True, f"Removed lifecycle policy from {bucket}."
+                else:
+                    self.s3.put_bucket_lifecycle_configuration(
+                        Bucket=bucket,
+                        LifecycleConfiguration={"Rules": original_rules},
+                    )
+                    return True, f"Restored original lifecycle policy on {bucket}."
+
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            msg = e.response["Error"]["Message"]
+            return False, f"S3 error ({code}): {msg}"
 
         return False, "No rollback handler for recommendation type."
 
