@@ -1,6 +1,6 @@
 [package]
 name = "aws-cost-optimizer"
-version = "0.1.0"
+version = "1.0.0"
 description = "AWS Cost Optimizer Desktop App"
 authors = []
 edition = "2021"
