@@ -8,6 +8,9 @@ Release page:
 Latest release:
 - https://github.com/celestinryf/AWS-Cost-Optimizer/releases/latest
 
+Known issue:
+- `v1.0.2` macOS assets were signed incorrectly and may show as damaged. Use `v1.0.3+`.
+
 ## List available versions
 
 Browser:
@@ -68,9 +71,9 @@ https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/<asse
 Examples:
 
 ```text
-https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_aarch64.dmg
-https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_x64_en-US.msi
-https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/aws-cost-optimizer_0.1.0_amd64.AppImage
+https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_aarch64.dmg
+https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_x64_en-US.msi
+https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_amd64.AppImage
 ```
 
 ## Homebrew and WinGet

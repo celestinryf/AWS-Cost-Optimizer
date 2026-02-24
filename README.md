@@ -134,9 +134,12 @@ https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/<asse
 ```
 
 Examples:
-- macOS DMG: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_aarch64.dmg`
-- Windows MSI: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_x64_en-US.msi`
-- Linux AppImage: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/aws-cost-optimizer_0.1.0_amd64.AppImage`
+- macOS DMG: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_aarch64.dmg`
+- Windows MSI: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_x64_en-US.msi`
+- Linux AppImage: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_amd64.AppImage`
+
+Known issue:
+- `v1.0.2` macOS assets were signed incorrectly and may show as damaged. Use `v1.0.3+`.
 
 Detailed per-platform CLI commands: `docs/downloads.md`
 

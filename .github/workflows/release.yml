@@ -221,6 +221,92 @@ jobs:
           $override | Set-Content -Path "client/src-tauri/tauri.windows-signing.json" -Encoding utf8
           Write-Host "Windows signing override written with thumbprint $($cert.Thumbprint)."
 
+      # ---- Preflight packaging gate (before publish) ----
+      # Build installers without updater artifacts first, then validate package
+      # payload and macOS signature structure before publishing release assets.
+      - name: Preflight package build (no updater artifacts)
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          npm --prefix client run tauri -- build --target "${{ matrix.target }}" --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Validate packaged artifacts before publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ matrix.target }}"
+          BUNDLE_DIR="client/src-tauri/target/${TARGET}/release/bundle"
+
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            APP_PATH="${BUNDLE_DIR}/macos/AWS Cost Optimizer.app"
+            DMG_PATH="$(find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+            [[ -d "${APP_PATH}" ]] || { echo "::error::Missing macOS app bundle at ${APP_PATH}"; exit 1; }
+            [[ -n "${DMG_PATH}" ]] || { echo "::error::Missing macOS .dmg in ${BUNDLE_DIR}/dmg"; exit 1; }
+            [[ -f "${APP_PATH}/Contents/_CodeSignature/CodeResources" ]] || {
+              echo "::error::Missing CodeResources (invalid app signature structure)."
+              exit 1
+            }
+
+            VERIFY_LOG="$(mktemp)"
+            if ! codesign --verify --deep --strict --verbose=4 "${APP_PATH}" >"${VERIFY_LOG}" 2>&1; then
+              cat "${VERIFY_LOG}"
+              echo "::error::codesign verification failed for ${APP_PATH}"
+              exit 1
+            fi
+            if grep -Eq "code has no resources but signature indicates they must be present|code object is not signed at all" "${VERIFY_LOG}"; then
+              cat "${VERIFY_LOG}"
+              echo "::error::Detected invalid macOS app signature output."
+              exit 1
+            fi
+
+            MOUNT_POINT="$(hdiutil attach -nobrowse -readonly "${DMG_PATH}" | awk '/\\/Volumes\\//{print substr($0, index($0,$3)); exit}')"
+            MOUNTED_APP="${MOUNT_POINT}/AWS Cost Optimizer.app"
+            MOUNTED_SIDECAR="${MOUNTED_APP}/Contents/MacOS/aws-cost-optimizer-api"
+            [[ -d "${MOUNTED_APP}" ]] || { echo "::error::Mounted DMG missing app bundle."; exit 1; }
+            [[ -f "${MOUNTED_SIDECAR}" ]] || { echo "::error::Mounted DMG missing sidecar binary."; exit 1; }
+
+            chmod +x "${MOUNTED_SIDECAR}" || true
+            "${MOUNTED_SIDECAR}" &
+            SIDECAR_PID=$!
+            cleanup() {
+              kill "${SIDECAR_PID}" >/dev/null 2>&1 || true
+              hdiutil detach "${MOUNT_POINT}" >/dev/null 2>&1 || true
+            }
+            trap cleanup EXIT
+            for attempt in {1..45}; do
+              HEALTH_PAYLOAD="$(curl -fsS "http://127.0.0.1:8000/api/v1/health" || true)"
+              if printf '%s' "${HEALTH_PAYLOAD}" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                echo "Mounted app sidecar health check passed."
+                break
+              fi
+              if [[ "${attempt}" -eq 45 ]]; then
+                echo "::error::Mounted app sidecar health check failed."
+                exit 1
+              fi
+              sleep 1
+            done
+          elif [[ "${RUNNER_OS}" == "Windows" ]]; then
+            MSI_PATH="$(find "${BUNDLE_DIR}/msi" -maxdepth 1 -type f -name '*.msi' -print -quit || true)"
+            EXE_PATH="$(find "${BUNDLE_DIR}/nsis" -maxdepth 1 -type f -name '*.exe' -print -quit || true)"
+            [[ -n "${MSI_PATH}" ]] || { echo "::error::Missing Windows .msi in ${BUNDLE_DIR}/msi"; exit 1; }
+            [[ -n "${EXE_PATH}" ]] || { echo "::error::Missing Windows .exe in ${BUNDLE_DIR}/nsis"; exit 1; }
+          else
+            DEB_PATH="$(find "${BUNDLE_DIR}/deb" -maxdepth 1 -type f -name '*.deb' -print -quit || true)"
+            APPIMAGE_PATH="$(find "${BUNDLE_DIR}/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit || true)"
+            [[ -n "${DEB_PATH}" ]] || { echo "::error::Missing Linux .deb in ${BUNDLE_DIR}/deb"; exit 1; }
+            [[ -n "${APPIMAGE_PATH}" ]] || { echo "::error::Missing Linux .AppImage in ${BUNDLE_DIR}/appimage"; exit 1; }
+          fi
+
       # ---- Build + Publish release ----
       # tauri-action creates the GitHub Release (draft=false), attaches all
       # platform installers, and generates latest.json for the auto-updater.
