@@ -152,6 +152,75 @@ jobs:
           npm run tauri -- icon icon-src.png
           rm -f icon-src.png
 
+      # ---- macOS signing/notarization mode ----
+      # If a Developer ID cert is configured, use it (and optional notarization
+      # credentials). Otherwise, force ad-hoc signing as an interim so the app
+      # bundle has a valid macOS signature structure.
+      - name: Resolve macOS signing mode
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${APPLE_CERTIFICATE}" && -n "${APPLE_SIGNING_IDENTITY}" ]]; then
+            echo "MACOS_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "$GITHUB_ENV"
+            echo "Using Developer ID signing inputs for macOS build."
+          elif [[ -n "${APPLE_CERTIFICATE}" || -n "${APPLE_SIGNING_IDENTITY}" ]]; then
+            echo "::error::Set both APPLE_CERTIFICATE and APPLE_SIGNING_IDENTITY for macOS signing, or set neither to use ad-hoc signing."
+            exit 1
+          else
+            echo "MACOS_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "No Apple cert configured; using ad-hoc signing identity (-)."
+          fi
+
+      # ---- Windows Authenticode signing mode ----
+      # Requires a base64-encoded .pfx cert and password.
+      # This step imports the cert and generates a Tauri config override with
+      # certificate thumbprint + timestamp server.
+      - name: Configure Windows code signing
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_B64)) {
+            throw "Missing required secret: WINDOWS_CERT_PFX_B64"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PASSWORD)) {
+            throw "Missing required secret: WINDOWS_CERT_PASSWORD"
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "aws-cost-optimizer-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_B64))
+          $securePass = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -Password $securePass -CertStoreLocation Cert:\CurrentUser\My -Exportable
+          if (-not $cert) {
+            throw "Failed to import PFX certificate into CurrentUser\\My store."
+          }
+
+          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
+          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
+            $timestampUrl = "http://timestamp.digicert.com"
+          }
+
+          $override = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $cert.Thumbprint
+                timestampUrl = $timestampUrl
+                digestAlgorithm = "sha256"
+                tsp = $false
+              }
+            }
+          } | ConvertTo-Json -Depth 10
+
+          $override | Set-Content -Path "client/src-tauri/tauri.windows-signing.json" -Encoding utf8
+          Write-Host "Windows signing override written with thumbprint $($cert.Thumbprint)."
+
       # ---- Build + Publish release ----
       # tauri-action creates the GitHub Release (draft=false), attaches all
       # platform installers, and generates latest.json for the auto-updater.
@@ -160,11 +229,46 @@ jobs:
       # Required secrets:
       #   TAURI_SIGNING_PRIVATE_KEY        — from: tauri signer generate
       #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — passphrase you chose (empty if none)
+      #   WINDOWS_CERT_PFX_B64, WINDOWS_CERT_PASSWORD
+      #   WINDOWS_TIMESTAMP_URL (optional; defaults to DigiCert)
       #
       # Optional (macOS notarization):
       #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD
       #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-      - name: Build Tauri app and publish to GitHub Releases
+      - name: Build Tauri app and publish to GitHub Releases (non-Windows)
+        if: matrix.os != 'windows-latest'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        with:
+          projectPath: client
+          tagName: ${{ github.ref_name }}
+          releaseName: "AWS Cost Optimizer ${{ github.ref_name }}"
+          releaseBody: |
+            Download the installer for your platform below.
+
+            **macOS (Apple Silicon + Intel):** `.dmg`
+            **Windows:** `.msi` or `.exe` (NSIS)
+            **Linux:** `.AppImage` or `.deb`
+
+            The app will prompt you to install future updates automatically.
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Build Tauri app and publish to GitHub Releases (Windows signed)
+        if: matrix.os == 'windows-latest'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -184,7 +288,7 @@ jobs:
             The app will prompt you to install future updates automatically.
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.windows-signing.json
 
   package-manifests:
     name: Generate package manager manifests
