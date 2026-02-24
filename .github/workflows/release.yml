@@ -75,6 +75,42 @@ jobs:
           DST="client/src-tauri/binaries/aws-cost-optimizer-api-${{ matrix.target }}${{ matrix.suffix }}"
           cp "$SRC" "$DST"
 
+      # ---- Sidecar smoke test ----
+      # Verify the bundled sidecar binary starts and responds before we package
+      # and publish installers.
+      - name: Smoke test sidecar health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="client/src-tauri/binaries/aws-cost-optimizer-api-${{ matrix.target }}${{ matrix.suffix }}"
+          chmod +x "$BIN" || true
+          "$BIN" &
+          SIDECAR_PID=$!
+          trap 'if [[ "${RUNNER_OS}" == "Windows" ]]; then taskkill //PID "$SIDECAR_PID" //T //F || true; else kill "$SIDECAR_PID" || true; fi' EXIT
+
+          python3 << 'PYEOF'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          url = "http://127.0.0.1:8000/api/v1/health"
+          deadline = time.time() + 45
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(url, timeout=2) as response:
+                      payload = json.loads(response.read().decode("utf-8"))
+                      if response.status == 200 and payload.get("status") == "ok":
+                          print("Sidecar health check passed.")
+                          sys.exit(0)
+              except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+                  time.sleep(1)
+
+          print("Sidecar health check failed: /api/v1/health did not return 200 within timeout.")
+          sys.exit(1)
+          PYEOF
+
       # ---- Node / Tauri ----
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
@@ -110,25 +146,10 @@ jobs:
           npm run tauri -- icon icon-src.png
           rm -f icon-src.png
 
-      # ---- Inject signing pubkey ----
-      # tauri.conf.json ships with pubkey="" so that desktop CI builds (which
-      # don't have the signing secret) can compile without signing. For releases
-      # we stamp the real pubkey in here so tauri-action embeds it in the binary
-      # and generates a correctly-signed latest.json.
-      - name: Stamp updater pubkey into tauri.conf.json
-        shell: python3 {0}
-        run: |
-          import json, pathlib
-          PUBKEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5MUZERDIxNkNBMzkwNTEKUldSUmtLTnNJZDBmeWZZUTJBTlFiQjFLSVlEOEhSUi9hUyt3L3dSWFJNaFpqdS8rTVlSSnROLzUK"
-          p = pathlib.Path("client/src-tauri/tauri.conf.json")
-          cfg = json.loads(p.read_text())
-          cfg.setdefault("plugins", {}).setdefault("updater", {})["pubkey"] = PUBKEY
-          p.write_text(json.dumps(cfg, indent=2) + "\n")
-          print("Pubkey stamped.")
-
       # ---- Build + Publish release ----
       # tauri-action creates the GitHub Release (draft=false), attaches all
       # platform installers, and generates latest.json for the auto-updater.
+      # Updater pubkey is read directly from client/src-tauri/tauri.conf.json.
       #
       # Required secrets:
       #   TAURI_SIGNING_PRIVATE_KEY        — from: tauri signer generate

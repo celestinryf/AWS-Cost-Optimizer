@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
@@ -27,8 +28,11 @@ pub struct AwsCredentials {
 pub struct SidecarState(pub Mutex<Option<CommandChild>>);
 
 // ---------------------------------------------------------------------------
-// Credential file helpers
+// Credential storage helpers (OS keychain + legacy file migration)
 // ---------------------------------------------------------------------------
+
+const KEYRING_SERVICE: &str = "aws-cost-optimizer";
+const KEYRING_ACCOUNT: &str = "aws-credentials";
 
 fn credentials_path(app: &AppHandle) -> std::path::PathBuf {
     app.path()
@@ -37,19 +41,56 @@ fn credentials_path(app: &AppHandle) -> std::path::PathBuf {
         .join("credentials.json")
 }
 
-fn read_credentials(app: &AppHandle) -> Option<AwsCredentials> {
+fn keyring_entry() -> Result<Entry, String> {
+    Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|e| e.to_string())
+}
+
+fn read_credentials_from_keyring() -> Option<AwsCredentials> {
+    let entry = keyring_entry().ok()?;
+    match entry.get_password() {
+        Ok(raw) => serde_json::from_str(&raw).ok(),
+        Err(keyring::Error::NoEntry) => None,
+        Err(_) => None,
+    }
+}
+
+fn read_credentials_from_legacy_file(app: &AppHandle) -> Option<AwsCredentials> {
     let path = credentials_path(app);
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
 }
 
-fn write_credentials(app: &AppHandle, creds: &AwsCredentials) -> Result<(), String> {
+fn remove_legacy_credentials_file(app: &AppHandle) -> Result<(), String> {
     let path = credentials_path(app);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.to_string()),
     }
+}
+
+fn read_credentials(app: &AppHandle) -> Option<AwsCredentials> {
+    if let Some(creds) = read_credentials_from_keyring() {
+        return Some(creds);
+    }
+
+    // One-time migration path for older installations that persisted plaintext.
+    let creds = read_credentials_from_legacy_file(app)?;
+    if write_credentials(app, &creds).is_ok() {
+        return Some(creds);
+    }
+
+    None
+}
+
+fn write_credentials(app: &AppHandle, creds: &AwsCredentials) -> Result<(), String> {
     let json = serde_json::to_string_pretty(creds).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())
+    keyring_entry()?
+        .set_password(&json)
+        .map_err(|e| e.to_string())?;
+    // Best-effort cleanup of old plaintext credential file.
+    let _ = remove_legacy_credentials_file(app);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +120,7 @@ fn spawn_sidecar(app: &AppHandle, creds: &AwsCredentials) -> Result<CommandChild
 /// Polls the FastAPI health endpoint until it responds or the timeout is reached.
 #[cfg(not(dev))]
 fn wait_for_backend(timeout_secs: u64) -> bool {
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         if std::time::Instant::now() >= deadline {
             return false;
