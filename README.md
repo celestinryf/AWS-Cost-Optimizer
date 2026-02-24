@@ -94,6 +94,21 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='your-password'
 bash scripts/prepush_check.sh --desktop-build
 ```
 
+### One-command desktop installer build
+
+Signed build (produces updater artifacts + signed installer):
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='your-password'
+bash scripts/build_desktop_app.sh
+```
+
+Unsigned local build (installer only, skips updater signing):
+
+```bash
+bash scripts/build_desktop_app.sh --unsigned
+```
+
 ## Desktop build and release
 
 Desktop CI workflow: [`.github/workflows/desktop.yml`](/Users/jideryf/AWS-Cost-Optimizer/.github/workflows/desktop.yml)  
@@ -107,7 +122,35 @@ Notes:
 - `TAURI_SIGNING_PRIVATE_KEY` must be the exact key contents on one line, without extra newlines.
 - `GITHUB_TOKEN` alone is not sufficient for updater signing.
 
+## Downloads
+
+- Latest Release (all installers): https://github.com/celestinryf/AWS-Cost-Optimizer/releases/latest
+- All Releases (pick any version): https://github.com/celestinryf/AWS-Cost-Optimizer/releases
+
+Direct download link pattern (replace `vX.Y.Z` and filename):
+
+```text
+https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/<asset-filename>
+```
+
+Examples:
+- macOS DMG: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_aarch64.dmg`
+- Windows MSI: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS%20Cost%20Optimizer_0.1.0_x64_en-US.msi`
+- Linux AppImage: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/aws-cost-optimizer_0.1.0_amd64.AppImage`
+
+Detailed per-platform CLI commands: `docs/downloads.md`
+
 ## Helpful scripts
 
 - `scripts/create_test_data.py` - seeds an S3 bucket with sample data for scanner testing.
 - `scripts/prepush_check.sh` - validates key CI/build checks before pushing.
+- `scripts/build_desktop_app.sh` - one-command desktop installer build (deps + sidecar + Tauri package).
+- `scripts/update_homebrew_cask.sh` - generates a Homebrew cask from release assets.
+- `scripts/generate_winget_manifests.sh` - generates WinGet manifests from release assets.
+
+## Documentation
+
+- `docs/pre-push-checklist.md` - pre-push quality gate usage.
+- `docs/context-strategy.md` - architecture context and roadmap decisions (Terraform, multi-cloud, scale).
+- `docs/distribution.md` - release targets and package-manager publishing flow.
+- `docs/downloads.md` - how users can download specific versions per platform.
