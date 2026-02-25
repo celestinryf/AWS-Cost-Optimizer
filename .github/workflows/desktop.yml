@@ -6,12 +6,14 @@ on:
     paths:
       - "client/**"
       - "server/**"
+      - ".github/actions/desktop-prepare/**"
       - ".github/workflows/desktop.yml"
   pull_request:
     branches: [main, dev]
     paths:
       - "client/**"
       - "server/**"
+      - ".github/actions/desktop-prepare/**"
       - ".github/workflows/desktop.yml"
 
 jobs:
@@ -51,77 +53,11 @@ jobs:
         with:
           workspaces: client/src-tauri -> target
 
-      # ---- Python / PyInstaller ----
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+      - name: Prepare desktop build inputs
+        uses: ./.github/actions/desktop-prepare
         with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: server/requirements-bundle.txt
-
-      - name: Install Python dependencies
-        run: pip install -r server/requirements-bundle.txt
-
-      # Linux: install WebKit2GTK (required by Tauri)
-      - name: Install Linux system deps
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
-      - name: Build Python sidecar (PyInstaller)
-        working-directory: server
-        run: pyinstaller aws-cost-optimizer-api.spec
-
-      - name: Copy sidecar to Tauri binaries dir
-        shell: bash
-        run: |
-          mkdir -p client/src-tauri/binaries
-          SRC="server/dist/aws-cost-optimizer-api${{ matrix.suffix }}"
-          DST="client/src-tauri/binaries/aws-cost-optimizer-api-${{ matrix.target }}${{ matrix.suffix }}"
-          cp "$SRC" "$DST"
-
-      # ---- Node / Tauri ----
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: client
-        run: npm ci
-
-      - name: Generate Tauri icons
-        shell: bash
-        working-directory: client
-        run: |
-          mkdir -p src-tauri/icons
-          # Build a 1024x1024 solid-blue PNG using Python stdlib (no pip deps).
-          # tauri icon will convert it into all required formats (png, icns, ico).
-          python3 << 'PYEOF'
-          import struct, zlib
-          def chunk(tag, data):
-              crc = zlib.crc32(tag + data) & 0xffffffff
-              return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', crc)
-          n = 1024
-          rows = b''.join(b'\x00' + bytes([37, 99, 235]) * n for _ in range(n))
-          png = (
-              b'\x89PNG\r\n\x1a\n'
-              + chunk(b'IHDR', struct.pack('>IIBBBBB', n, n, 8, 2, 0, 0, 0))
-              + chunk(b'IDAT', zlib.compress(rows, 9))
-              + chunk(b'IEND', b'')
-          )
-          open('icon-src.png', 'wb').write(png)
-          print("Generated icon-src.png")
-          PYEOF
-          npm run tauri -- icon icon-src.png
-          rm -f icon-src.png
+          target: ${{ matrix.target }}
+          suffix: ${{ matrix.suffix }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

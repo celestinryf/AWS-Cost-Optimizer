@@ -1,7 +1,5 @@
 name: Release
 
-# Triggered when you push a version tag, e.g.:
-#   git tag v0.2.0 && git push origin v0.2.0
 on:
   push:
     tags:
@@ -30,13 +28,12 @@ jobs:
             suffix: ""
 
     runs-on: ${{ matrix.os }}
-    name: Release (${{ matrix.os }})
+    name: Build (${{ matrix.os }})
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---- Rust ----
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -47,43 +44,12 @@ jobs:
         with:
           workspaces: client/src-tauri -> target
 
-      # ---- Python / PyInstaller ----
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+      - name: Prepare desktop build inputs
+        uses: ./.github/actions/desktop-prepare
         with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: server/requirements-bundle.txt
+          target: ${{ matrix.target }}
+          suffix: ${{ matrix.suffix }}
 
-      - name: Install Python dependencies
-        run: pip install -r server/requirements-bundle.txt
-
-      # Linux: system libraries required by Tauri
-      - name: Install Linux system deps
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
-
-      - name: Build Python sidecar (PyInstaller)
-        working-directory: server
-        run: pyinstaller aws-cost-optimizer-api.spec
-
-      - name: Copy sidecar to Tauri binaries dir
-        shell: bash
-        run: |
-          mkdir -p client/src-tauri/binaries
-          SRC="server/dist/aws-cost-optimizer-api${{ matrix.suffix }}"
-          DST="client/src-tauri/binaries/aws-cost-optimizer-api-${{ matrix.target }}${{ matrix.suffix }}"
-          cp "$SRC" "$DST"
-
-      # ---- Sidecar smoke test ----
-      # Verify the bundled sidecar binary starts and responds before we package
-      # and publish installers.
       - name: Smoke test sidecar health endpoint
         shell: bash
         run: |
@@ -117,46 +83,8 @@ jobs:
           sys.exit(1)
           PYEOF
 
-      # ---- Node / Tauri ----
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: client
-        run: npm ci
-
-      - name: Generate Tauri icons
-        shell: bash
-        working-directory: client
-        run: |
-          mkdir -p src-tauri/icons
-          python3 << 'PYEOF'
-          import struct, zlib
-          def chunk(tag, data):
-              crc = zlib.crc32(tag + data) & 0xffffffff
-              return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', crc)
-          n = 1024
-          rows = b''.join(b'\x00' + bytes([37, 99, 235]) * n for _ in range(n))
-          png = (
-              b'\x89PNG\r\n\x1a\n'
-              + chunk(b'IHDR', struct.pack('>IIBBBBB', n, n, 8, 2, 0, 0, 0))
-              + chunk(b'IDAT', zlib.compress(rows, 9))
-              + chunk(b'IEND', b'')
-          )
-          open('icon-src.png', 'wb').write(png)
-          PYEOF
-          npm run tauri -- icon icon-src.png
-          rm -f icon-src.png
-
-      # ---- macOS signing/notarization mode ----
-      # If a Developer ID cert is configured, use it (and optional notarization
-      # credentials). Otherwise, force ad-hoc signing as an interim so the app
-      # bundle has a valid macOS signature structure.
       - name: Resolve macOS signing mode
+        id: resolve_macos_signing_mode
         if: startsWith(matrix.os, 'macos')
         shell: bash
         env:
@@ -165,21 +93,18 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${APPLE_CERTIFICATE}" && -n "${APPLE_SIGNING_IDENTITY}" ]]; then
-            echo "MACOS_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "$GITHUB_ENV"
+            echo "macos_signing_identity=${APPLE_SIGNING_IDENTITY}" >> "$GITHUB_OUTPUT"
             echo "Using Developer ID signing inputs for macOS build."
           elif [[ -n "${APPLE_CERTIFICATE}" || -n "${APPLE_SIGNING_IDENTITY}" ]]; then
             echo "::error::Set both APPLE_CERTIFICATE and APPLE_SIGNING_IDENTITY for macOS signing, or set neither to use ad-hoc signing."
             exit 1
           else
-            echo "MACOS_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "macos_signing_identity=-" >> "$GITHUB_OUTPUT"
             echo "No Apple cert configured; using ad-hoc signing identity (-)."
           fi
 
-      # ---- Windows Authenticode signing mode ----
-      # Requires a base64-encoded .pfx cert and password.
-      # This step imports the cert and generates a Tauri config override with
-      # certificate thumbprint + timestamp server.
       - name: Configure Windows code signing
+        id: configure_windows_code_signing
         if: matrix.os == 'windows-latest'
         shell: pwsh
         env:
@@ -187,11 +112,17 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_B64)) {
-            throw "Missing required secret: WINDOWS_CERT_PFX_B64"
+          $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_B64)
+          $hasPass = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PASSWORD)
+
+          if (-not $hasPfx -and -not $hasPass) {
+            "windows_signing_mode=unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "No Windows signing secrets configured; using unsigned Windows build."
+            exit 0
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PASSWORD)) {
-            throw "Missing required secret: WINDOWS_CERT_PASSWORD"
+
+          if (-not $hasPfx -or -not $hasPass) {
+            throw "Set both WINDOWS_CERT_PFX_B64 and WINDOWS_CERT_PASSWORD, or set neither for unsigned Windows build."
           }
 
           $pfxPath = Join-Path $env:RUNNER_TEMP "aws-cost-optimizer-signing.pfx"
@@ -219,28 +150,33 @@ jobs:
           } | ConvertTo-Json -Depth 10
 
           $override | Set-Content -Path "client/src-tauri/tauri.windows-signing.json" -Encoding utf8
+          "windows_signing_mode=signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Windows signing override written with thumbprint $($cert.Thumbprint)."
 
-      # ---- Preflight packaging gate (before publish) ----
-      # Build installers without updater artifacts first, then validate package
-      # payload and macOS signature structure before publishing release assets.
-      - name: Preflight package build (no updater artifacts)
+      - name: Build Tauri app
         shell: bash
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.MACOS_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_identity }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          WINDOWS_SIGNING_MODE: ${{ steps.configure_windows_code_signing.outputs.windows_signing_mode }}
         run: |
           set -euo pipefail
-          npm --prefix client run tauri -- build --target "${{ matrix.target }}" --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          ARGS=(build --target "${{ matrix.target }}")
+          if [[ "${RUNNER_OS}" == "Windows" && "${WINDOWS_SIGNING_MODE}" == "signed" ]]; then
+            ARGS+=(--config src-tauri/tauri.windows-signing.json)
+          fi
+          npm --prefix client run tauri -- "${ARGS[@]}"
 
-      - name: Validate packaged artifacts before publish
+      - name: Validate packaged artifacts before upload
         shell: bash
         run: |
           set -euo pipefail
@@ -269,7 +205,7 @@ jobs:
               exit 1
             fi
 
-            MOUNT_POINT="$(hdiutil attach -nobrowse -readonly "${DMG_PATH}" | awk '/\\/Volumes\\//{print substr($0, index($0,$3)); exit}')"
+            MOUNT_POINT="$(hdiutil attach -nobrowse -readonly "${DMG_PATH}" | awk '/\/Volumes\//{print substr($0, index($0,$3)); exit}')"
             MOUNTED_APP="${MOUNT_POINT}/AWS Cost Optimizer.app"
             MOUNTED_SIDECAR="${MOUNTED_APP}/Contents/MacOS/aws-cost-optimizer-api"
             [[ -d "${MOUNTED_APP}" ]] || { echo "::error::Mounted DMG missing app bundle."; exit 1; }
@@ -307,79 +243,146 @@ jobs:
             [[ -n "${APPIMAGE_PATH}" ]] || { echo "::error::Missing Linux .AppImage in ${BUNDLE_DIR}/appimage"; exit 1; }
           fi
 
-      # ---- Build + Publish release ----
-      # tauri-action creates the GitHub Release (draft=false), attaches all
-      # platform installers, and generates latest.json for the auto-updater.
-      # Updater pubkey is read directly from client/src-tauri/tauri.conf.json.
-      #
-      # Required secrets:
-      #   TAURI_SIGNING_PRIVATE_KEY        — from: tauri signer generate
-      #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — passphrase you chose (empty if none)
-      #   WINDOWS_CERT_PFX_B64, WINDOWS_CERT_PASSWORD
-      #   WINDOWS_TIMESTAMP_URL (optional; defaults to DigiCert)
-      #
-      # Optional (macOS notarization):
-      #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD
-      #   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-      - name: Build Tauri app and publish to GitHub Releases (non-Windows)
-        if: matrix.os != 'windows-latest'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.MACOS_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_PROVIDER_SHORT_NAME: ${{ secrets.APPLE_PROVIDER_SHORT_NAME }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      - name: Validate Windows code signatures
+        if: matrix.os == 'windows-latest' && steps.configure_windows_code_signing.outputs.windows_signing_mode == 'signed'
+        shell: pwsh
+        run: |
+          $target = "${{ matrix.target }}"
+          $bundleDir = "client/src-tauri/target/$target/release/bundle"
+          $msi = Get-ChildItem "$bundleDir/msi" -Filter *.msi | Select-Object -First 1
+          $exe = Get-ChildItem "$bundleDir/nsis" -Filter *.exe | Select-Object -First 1
+          if (-not $msi -or -not $exe) {
+            throw "Expected signed Windows installers were not produced."
+          }
+
+          $msiSig = Get-AuthenticodeSignature $msi.FullName
+          $exeSig = Get-AuthenticodeSignature $exe.FullName
+          if ($msiSig.Status -eq 'NotSigned' -or $exeSig.Status -eq 'NotSigned') {
+            throw "Windows installer signature missing on MSI or EXE."
+          }
+
+      - name: Generate updater fragment
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="client/src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_VERSION="$(python3 - <<'PY'
+          import json
+          with open('client/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
+              print(json.load(f)['version'])
+          PY
+          )"
+
+          python3 scripts/merge_updater_latest.py collect \
+            --bundle-dir "${BUNDLE_DIR}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${APP_VERSION}" \
+            --notes-file ".github/release-body.md" \
+            --output "${BUNDLE_DIR}/updater-fragment.json"
+
+      - name: Upload release bundle artifacts
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: client
-          tagName: ${{ github.ref_name }}
-          releaseName: "AWS Cost Optimizer ${{ github.ref_name }}"
-          releaseBody: |
-            Download the installer for your platform below.
+          name: release-bundle-${{ matrix.target }}
+          path: |
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm.sig
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/updater-fragment.json
+          if-no-files-found: error
+          retention-days: 30
 
-            **macOS (Apple Silicon + Intel):** `.dmg`
-            **Windows:** `.msi` or `.exe` (NSIS)
-            **Linux:** `.AppImage` or `.deb`
+  publish-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build-release
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-            The app will prompt you to install future updates automatically.
-          releaseDraft: false
-          prerelease: false
-          args: --target ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Build Tauri app and publish to GitHub Releases (Windows signed)
-        if: matrix.os == 'windows-latest'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          projectPath: client
-          tagName: ${{ github.ref_name }}
-          releaseName: "AWS Cost Optimizer ${{ github.ref_name }}"
-          releaseBody: |
-            Download the installer for your platform below.
+          pattern: release-bundle-*
+          path: release-assets
 
-            **macOS (Apple Silicon + Intel):** `.dmg`
-            **Windows:** `.msi` or `.exe` (NSIS)
-            **Linux:** `.AppImage` or `.deb`
+      - name: Merge updater manifests
+        run: |
+          set -euo pipefail
+          python3 scripts/merge_updater_latest.py merge \
+            --input-glob "release-assets/**/updater-fragment.json" \
+            --output "release-assets/latest.json"
 
-            The app will prompt you to install future updates automatically.
-          releaseDraft: false
-          prerelease: false
-          args: --target ${{ matrix.target }} --config src-tauri/tauri.windows-signing.json
+      - name: Create or update release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TITLE="AWS Cost Optimizer ${TAG}"
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --notes-file ".github/release-body.md"
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${TITLE}" \
+              --notes-file ".github/release-body.md"
+          fi
+
+      - name: Upload release assets
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          mapfile -d '' ASSETS < <(
+            find release-assets -type f \
+              ! -name 'updater-fragment.json' \
+              ! -name 'latest.json' \
+              \( \
+                -name '*.dmg' -o \
+                -name '*.app.tar.gz' -o \
+                -name '*.AppImage' -o \
+                -name '*.deb' -o \
+                -name '*.rpm' -o \
+                -name '*.msi' -o \
+                -name '*.exe' -o \
+                -name '*.sig' \
+              \) \
+              -print0
+          )
+
+          if [[ "${#ASSETS[@]}" -eq 0 ]]; then
+            echo "::error::No release assets found to upload."
+            exit 1
+          fi
+
+          gh release upload "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber \
+            "${ASSETS[@]}" \
+            "release-assets/latest.json"
 
   package-manifests:
     name: Generate package manager manifests
     runs-on: ubuntu-latest
-    needs: build-release
+    needs: publish-release
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -1,0 +1,88 @@
+name: Desktop Prepare
+description: Prepare Python sidecar + frontend assets for desktop builds.
+
+inputs:
+  target:
+    description: Rust/Tauri target triple.
+    required: true
+  suffix:
+    description: Executable suffix for sidecar (.exe on Windows).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python 3.13
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.13"
+        cache: pip
+        cache-dependency-path: server/requirements-bundle.txt
+
+    - name: Install Python dependencies
+      shell: bash
+      run: pip install -r server/requirements-bundle.txt
+
+    - name: Install Linux system deps
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libwebkit2gtk-4.1-dev \
+          libssl-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-dev
+
+    - name: Build Python sidecar (PyInstaller)
+      shell: bash
+      working-directory: server
+      run: pyinstaller aws-cost-optimizer-api.spec
+
+    - name: Copy sidecar to Tauri binaries dir
+      shell: bash
+      run: |
+        mkdir -p client/src-tauri/binaries
+        SRC="server/dist/aws-cost-optimizer-api${{ inputs.suffix }}"
+        DST="client/src-tauri/binaries/aws-cost-optimizer-api-${{ inputs.target }}${{ inputs.suffix }}"
+        cp "$SRC" "$DST"
+
+    - name: Set up Node.js 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: client/package-lock.json
+
+    - name: Install frontend dependencies
+      shell: bash
+      working-directory: client
+      run: npm ci
+
+    - name: Generate Tauri icons
+      shell: bash
+      working-directory: client
+      run: |
+        mkdir -p src-tauri/icons
+        python3 << 'PYEOF'
+        import struct
+        import zlib
+
+        def chunk(tag, data):
+            crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+        n = 1024
+        rows = b"".join(b"\x00" + bytes([37, 99, 235]) * n for _ in range(n))
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 9))
+            + chunk(b"IEND", b"")
+        )
+        with open("icon-src.png", "wb") as f:
+            f.write(png)
+        PYEOF
+        npm run tauri -- icon icon-src.png
+        rm -f icon-src.png

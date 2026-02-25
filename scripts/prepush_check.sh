@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/desktop_common.sh"
 
 RUN_ACTIONLINT=1
 RUN_CLIENT_BUILD=1
@@ -45,7 +46,7 @@ fail() {
 
 need_cmd() {
   local cmd="$1"
-  command -v "$cmd" >/dev/null 2>&1 || fail "Missing required command: $cmd"
+  desktop_common_need_cmd "$cmd" || fail "Missing required command: $cmd"
 }
 
 check_workflow_signing_refs() {
@@ -94,62 +95,13 @@ run_server_unit_tests() {
   make -C "$ROOT_DIR/server" test-unit
 }
 
-resolve_host_target() {
-  local os arch
-  os="$(uname -s)"
-  arch="$(uname -m)"
-  case "$os" in
-    Darwin)
-      case "$arch" in
-        arm64|aarch64) echo "aarch64-apple-darwin" ;;
-        x86_64) echo "x86_64-apple-darwin" ;;
-        *) fail "Unsupported macOS architecture: $arch" ;;
-      esac
-      ;;
-    Linux)
-      case "$arch" in
-        x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
-        *) fail "Unsupported Linux architecture: $arch" ;;
-      esac
-      ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      echo "x86_64-pc-windows-msvc"
-      ;;
-    *)
-      fail "Unsupported OS for desktop build: $os"
-      ;;
-  esac
-}
-
-prepare_signing_env() {
-  if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
-    local key_path="${TAURI_KEY_PATH:-$HOME/.tauri/aws-cost-optimizer.key}"
-    [[ -f "$key_path" ]] || fail "Set TAURI_SIGNING_PRIVATE_KEY or create key at $key_path"
-    TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
-    export TAURI_SIGNING_PRIVATE_KEY
-    log "Loaded TAURI_SIGNING_PRIVATE_KEY from $key_path"
-  fi
-
-  [[ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]] \
-    || fail "Set TAURI_SIGNING_PRIVATE_KEY_PASSWORD before --desktop-build."
-}
-
 run_desktop_build() {
   if [[ "$RUN_DESKTOP_BUILD" -eq 0 ]]; then
     return
   fi
-  need_cmd npm
-  need_cmd cargo
-  prepare_signing_env
-  local target
-  target="$(resolve_host_target)"
-  if [[ ! -d "$ROOT_DIR/client/node_modules" ]]; then
-    log "client/node_modules missing; running npm ci..."
-    npm --prefix "$ROOT_DIR/client" ci
-  fi
-  log "Running local Tauri desktop build for target $target..."
-  npm --prefix "$ROOT_DIR/client" run tauri -- build --target "$target"
+  need_cmd bash
+  log "Running local Tauri desktop build script..."
+  bash "$ROOT_DIR/scripts/build_desktop_app.sh"
 }
 
 while [[ $# -gt 0 ]]; do

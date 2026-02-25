@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/desktop_common.sh"
 
 UNSIGNED=0
 TARGET_OVERRIDE=""
@@ -37,57 +38,14 @@ fail() {
   exit 1
 }
 
-need_cmd() {
-  local cmd="$1"
-  command -v "$cmd" >/dev/null 2>&1 || fail "Missing required command: $cmd"
-}
-
-resolve_host_target() {
-  local os arch
-  os="$(uname -s)"
-  arch="$(uname -m)"
-  case "$os" in
-    Darwin)
-      case "$arch" in
-        arm64|aarch64) echo "aarch64-apple-darwin" ;;
-        x86_64) echo "x86_64-apple-darwin" ;;
-        *) fail "Unsupported macOS architecture: $arch" ;;
-      esac
-      ;;
-    Linux)
-      case "$arch" in
-        x86_64|amd64) echo "x86_64-unknown-linux-gnu" ;;
-        aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
-        *) fail "Unsupported Linux architecture: $arch" ;;
-      esac
-      ;;
-    MINGW*|MSYS*|CYGWIN*|Windows_NT)
-      echo "x86_64-pc-windows-msvc"
-      ;;
-    *)
-      fail "Unsupported OS for desktop build: $os"
-      ;;
-  esac
-}
-
-target_suffix() {
-  local target="$1"
-  case "$target" in
-    *windows*) echo ".exe" ;;
-    *) echo "" ;;
-  esac
-}
-
 prepare_signing_env() {
   if [[ "$UNSIGNED" -eq 1 ]]; then
     return
   fi
 
+  local key_path="${TAURI_KEY_PATH:-$HOME/.tauri/aws-cost-optimizer.key}"
   if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
-    local key_path="${TAURI_KEY_PATH:-$HOME/.tauri/aws-cost-optimizer.key}"
-    [[ -f "$key_path" ]] || fail "Missing key file: $key_path (or set TAURI_SIGNING_PRIVATE_KEY)."
-    TAURI_SIGNING_PRIVATE_KEY="$(cat "$key_path")"
-    export TAURI_SIGNING_PRIVATE_KEY
+    desktop_common_load_signing_key "$key_path" || fail "Could not load TAURI signing key."
     log "Loaded TAURI_SIGNING_PRIVATE_KEY from $key_path"
   fi
 
@@ -116,19 +74,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-need_cmd python3
-need_cmd npm
-need_cmd cargo
-need_cmd rg
+desktop_common_need_cmd python3 || fail "Missing required command: python3"
+desktop_common_need_cmd npm || fail "Missing required command: npm"
+desktop_common_need_cmd cargo || fail "Missing required command: cargo"
+desktop_common_need_cmd rg || fail "Missing required command: rg"
 
-TARGET="${TARGET_OVERRIDE:-$(resolve_host_target)}"
-SUFFIX="$(target_suffix "$TARGET")"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+TARGET="${TARGET_OVERRIDE:-$(desktop_common_resolve_host_target)}"
+SUFFIX="$(desktop_common_target_suffix "$TARGET")"
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if [[ -x "$ROOT_DIR/.venv/bin/python3" ]]; then
+    PYTHON_BIN="$ROOT_DIR/.venv/bin/python3"
+  elif [[ -x "$ROOT_DIR/server/venv/bin/python3" ]]; then
+    PYTHON_BIN="$ROOT_DIR/server/venv/bin/python3"
+  else
+    PYTHON_BIN="python3"
+  fi
+fi
 
 prepare_signing_env
 
 log "Repository root: $ROOT_DIR"
 log "Target: $TARGET"
+log "Python: $PYTHON_BIN"
 if [[ "$UNSIGNED" -eq 1 ]]; then
   log "Mode: unsigned (skips updater artifact signing)"
 else

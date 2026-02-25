@@ -10,6 +10,27 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
+## Dependency lockfiles
+
+Direct dependency sources:
+
+- `requirements.in`
+- `requirements-dev.in`
+- `requirements-bundle.in`
+
+Compiled lockfiles:
+
+- `requirements.txt`
+- `requirements-dev.txt`
+- `requirements-bundle.txt`
+
+Regenerate and verify:
+
+```bash
+make deps-lock
+make deps-check
+```
+
 Run data is persisted in SQLite at `data/runs.db` by default.
 
 ## Base URL

@@ -75,6 +75,27 @@ make test-integration
 make test-cov
 ```
 
+### Dependency lock workflow
+
+The Python dependency source of truth is:
+
+- `server/requirements.in` (runtime direct dependencies)
+- `server/requirements-dev.in` (dev/test/tooling direct dependencies)
+- `server/requirements-bundle.in` (desktop sidecar bundle direct dependencies)
+
+Compiled lockfiles remain committed:
+
+- `server/requirements.txt`
+- `server/requirements-dev.txt`
+- `server/requirements-bundle.txt`
+
+Regenerate and verify:
+
+```bash
+make -C server deps-lock
+make -C server deps-check
+```
+
 ### Frontend build
 
 ```bash
@@ -148,8 +169,10 @@ Detailed per-platform CLI commands: `docs/downloads.md`
 - `scripts/create_test_data.py` - seeds an S3 bucket with sample data for scanner testing.
 - `scripts/prepush_check.sh` - validates key CI/build checks before pushing.
 - `scripts/build_desktop_app.sh` - one-command desktop installer build (deps + sidecar + Tauri package).
+- `scripts/lib/desktop_common.sh` - shared shell helpers for desktop/pre-push scripts.
 - `scripts/update_homebrew_cask.sh` - generates a Homebrew cask from release assets.
 - `scripts/generate_winget_manifests.sh` - generates WinGet manifests from release assets.
+- `scripts/merge_updater_latest.py` - collects and merges updater fragments into `latest.json`.
 
 ## Documentation
 

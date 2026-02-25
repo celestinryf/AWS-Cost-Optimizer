@@ -1,0 +1,6 @@
+-r requirements.in
+pytest==8.3.5
+pytest-cov==6.0.0
+httpx==0.28.1
+moto[s3]==5.1.5
+pip-tools==7.5.0
