@@ -160,7 +160,8 @@ Examples:
 - Linux AppImage: `https://github.com/celestinryf/AWS-Cost-Optimizer/releases/download/vX.Y.Z/AWS.Cost.Optimizer_<version>_amd64.AppImage`
 
 Known issue:
-- `v1.0.2` macOS assets were signed incorrectly and may show as damaged. Use `v1.0.3+`.
+- `v1.0.2` macOS assets were signed incorrectly and may show as damaged.
+- `v1.0.3` release is incomplete (missing macOS/Windows installers). Use `v1.0.4+`.
 
 Detailed per-platform CLI commands: `docs/downloads.md`
 

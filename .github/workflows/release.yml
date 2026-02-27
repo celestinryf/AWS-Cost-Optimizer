@@ -89,19 +89,84 @@ jobs:
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          if [[ -n "${APPLE_CERTIFICATE}" && -n "${APPLE_SIGNING_IDENTITY}" ]]; then
-            echo "macos_signing_identity=${APPLE_SIGNING_IDENTITY}" >> "$GITHUB_OUTPUT"
-            echo "Using Developer ID signing inputs for macOS build."
-          elif [[ -n "${APPLE_CERTIFICATE}" || -n "${APPLE_SIGNING_IDENTITY}" ]]; then
-            echo "::error::Set both APPLE_CERTIFICATE and APPLE_SIGNING_IDENTITY for macOS signing, or set neither to use ad-hoc signing."
-            exit 1
-          else
-            echo "macos_signing_identity=-" >> "$GITHUB_OUTPUT"
-            echo "No Apple cert configured; using ad-hoc signing identity (-)."
+          # Safe defaults: ad-hoc signing
+          {
+            echo "macos_signing_mode=ad_hoc"
+            echo "macos_signing_identity=-"
+            echo "apple_certificate_b64="
+            echo "apple_certificate_password="
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ -z "${APPLE_CERTIFICATE}" && -z "${APPLE_SIGNING_IDENTITY}" ]]; then
+            echo "No Apple signing secrets configured; using ad-hoc signing."
+            exit 0
           fi
+
+          if [[ -z "${APPLE_CERTIFICATE}" || -z "${APPLE_SIGNING_IDENTITY}" ]]; then
+            echo "::warning::Partial Apple signing secrets detected; falling back to ad-hoc signing."
+            exit 0
+          fi
+
+          if [[ -z "${APPLE_CERTIFICATE_PASSWORD}" ]]; then
+            echo "::warning::APPLE_CERTIFICATE_PASSWORD missing; falling back to ad-hoc signing."
+            exit 0
+          fi
+
+          CERT_PATH="${RUNNER_TEMP}/apple-signing-cert.p12"
+          KEYCHAIN_PATH="${RUNNER_TEMP}/apple-signing-validate.keychain-db"
+          export CERT_PATH
+          KEYCHAIN_PASSWORD="$(python3 - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(24))
+          PY
+          )"
+
+          cleanup() {
+            rm -f "${CERT_PATH}" || true
+            security delete-keychain "${KEYCHAIN_PATH}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          if ! python3 - <<'PY'; then
+          import base64
+          import os
+          from pathlib import Path
+
+          cert = os.environ["APPLE_CERTIFICATE"].strip()
+          Path(os.environ["CERT_PATH"]).write_bytes(base64.b64decode(cert, validate=True))
+          PY
+            echo "::warning::APPLE_CERTIFICATE is not valid base64; falling back to ad-hoc signing."
+            exit 0
+          fi
+
+          if ! security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}" >/dev/null; then
+            echo "::warning::Failed to create temporary keychain; falling back to ad-hoc signing."
+            exit 0
+          fi
+
+          security set-keychain-settings -lut 3600 "${KEYCHAIN_PATH}" >/dev/null 2>&1 || true
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}" >/dev/null 2>&1 || true
+
+          if ! security import "${CERT_PATH}" \
+            -k "${KEYCHAIN_PATH}" \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security >/dev/null 2>&1; then
+            echo "::warning::Apple certificate import validation failed; falling back to ad-hoc signing."
+            exit 0
+          fi
+
+          {
+            echo "macos_signing_mode=developer_id"
+            echo "macos_signing_identity=${APPLE_SIGNING_IDENTITY}"
+            echo "apple_certificate_b64=${APPLE_CERTIFICATE}"
+            echo "apple_certificate_password=${APPLE_CERTIFICATE_PASSWORD}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Using Developer ID signing inputs for macOS build."
 
       - name: Configure Windows code signing
         id: configure_windows_code_signing
@@ -112,54 +177,65 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
+          $overridePath = "client/src-tauri/tauri.windows-signing.json"
           $hasPfx = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_B64)
           $hasPass = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PASSWORD)
 
           if (-not $hasPfx -and -not $hasPass) {
+            if (Test-Path $overridePath) { Remove-Item $overridePath -Force }
             "windows_signing_mode=unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             Write-Host "No Windows signing secrets configured; using unsigned Windows build."
             exit 0
           }
 
           if (-not $hasPfx -or -not $hasPass) {
-            throw "Set both WINDOWS_CERT_PFX_B64 and WINDOWS_CERT_PASSWORD, or set neither for unsigned Windows build."
+            if (Test-Path $overridePath) { Remove-Item $overridePath -Force }
+            "windows_signing_mode=unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Warning "Partial Windows signing secrets detected; using unsigned Windows build."
+            exit 0
           }
 
-          $pfxPath = Join-Path $env:RUNNER_TEMP "aws-cost-optimizer-signing.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_B64))
-          $securePass = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
-          $cert = Import-PfxCertificate -FilePath $pfxPath -Password $securePass -CertStoreLocation Cert:\CurrentUser\My -Exportable
-          if (-not $cert) {
-            throw "Failed to import PFX certificate into CurrentUser\\My store."
-          }
-
-          $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
-          if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
-            $timestampUrl = "http://timestamp.digicert.com"
-          }
-
-          $override = @{
-            bundle = @{
-              windows = @{
-                certificateThumbprint = $cert.Thumbprint
-                timestampUrl = $timestampUrl
-                digestAlgorithm = "sha256"
-                tsp = $false
-              }
+          try {
+            $pfxPath = Join-Path $env:RUNNER_TEMP "aws-cost-optimizer-signing.pfx"
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_B64))
+            $securePass = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfxPath -Password $securePass -CertStoreLocation Cert:\CurrentUser\My -Exportable
+            if (-not $cert) {
+              throw "Failed to import PFX certificate into CurrentUser\\My store."
             }
-          } | ConvertTo-Json -Depth 10
 
-          $override | Set-Content -Path "client/src-tauri/tauri.windows-signing.json" -Encoding utf8
-          "windows_signing_mode=signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Windows signing override written with thumbprint $($cert.Thumbprint)."
+            $timestampUrl = $env:WINDOWS_TIMESTAMP_URL
+            if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
+              $timestampUrl = "http://timestamp.digicert.com"
+            }
+
+            $override = @{
+              bundle = @{
+                windows = @{
+                  certificateThumbprint = $cert.Thumbprint
+                  timestampUrl = $timestampUrl
+                  digestAlgorithm = "sha256"
+                  tsp = $false
+                }
+              }
+            } | ConvertTo-Json -Depth 10
+
+            $override | Set-Content -Path $overridePath -Encoding utf8
+            "windows_signing_mode=signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "Windows signing override written with thumbprint $($cert.Thumbprint)."
+          } catch {
+            if (Test-Path $overridePath) { Remove-Item $overridePath -Force }
+            "windows_signing_mode=unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Warning "Windows signing setup failed ($($_.Exception.Message)); using unsigned Windows build."
+          }
 
       - name: Build Tauri app
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ steps.resolve_macos_signing_mode.outputs.apple_certificate_b64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.resolve_macos_signing_mode.outputs.apple_certificate_password }}
           APPLE_SIGNING_IDENTITY: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_identity }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -175,6 +251,33 @@ jobs:
             ARGS+=(--config src-tauri/tauri.windows-signing.json)
           fi
           npm --prefix client run tauri -- "${ARGS[@]}"
+
+      - name: Write signing status metadata
+        shell: bash
+        env:
+          MACOS_SIGNING_MODE: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_mode }}
+          WINDOWS_SIGNING_MODE: ${{ steps.configure_windows_code_signing.outputs.windows_signing_mode }}
+          BUNDLE_DIR: client/src-tauri/target/${{ matrix.target }}/release/bundle
+        run: |
+          set -euo pipefail
+          mkdir -p "${BUNDLE_DIR}"
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+            "runner_os": os.environ["RUNNER_OS"],
+            "runner_label": os.environ["RUNNER_NAME"],
+            "target": "${{ matrix.target }}",
+            "macos_signing_mode": os.getenv("MACOS_SIGNING_MODE", "") or "n/a",
+            "windows_signing_mode": os.getenv("WINDOWS_SIGNING_MODE", "") or "n/a",
+          }
+
+          out = Path(os.environ["BUNDLE_DIR"]) / "signing-status.json"
+          out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          print(f"Wrote signing status metadata: {out}")
+          PY
 
       - name: Validate packaged artifacts before upload
         shell: bash
@@ -300,6 +403,7 @@ jobs:
             client/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
             client/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm.sig
             client/src-tauri/target/${{ matrix.target }}/release/bundle/updater-fragment.json
+            client/src-tauri/target/${{ matrix.target }}/release/bundle/signing-status.json
           if-no-files-found: error
           retention-days: 30
 
@@ -327,6 +431,42 @@ jobs:
             --input-glob "release-assets/**/updater-fragment.json" \
             --output "release-assets/latest.json"
 
+      - name: Compose release notes (with fallback status)
+        run: |
+          set -euo pipefail
+          cp ".github/release-body.md" "release-assets/release-notes.md"
+          python3 <<'PY'
+          import glob
+          import json
+          from pathlib import Path
+
+          notes_path = Path("release-assets/release-notes.md")
+          statuses = []
+          for status_path in sorted(glob.glob("release-assets/**/signing-status.json", recursive=True)):
+            with open(status_path, "r", encoding="utf-8") as fh:
+              statuses.append(json.load(fh))
+
+          fallback_lines = []
+          for entry in statuses:
+            runner_os = entry.get("runner_os")
+            target = entry.get("target")
+            mac_mode = entry.get("macos_signing_mode", "n/a")
+            win_mode = entry.get("windows_signing_mode", "n/a")
+
+            if runner_os == "macOS" and mac_mode != "developer_id":
+              fallback_lines.append(f"- `{target}`: macOS ad-hoc signing fallback (`{mac_mode}`)")
+            if runner_os == "Windows" and win_mode != "signed":
+              fallback_lines.append(f"- `{target}`: Windows unsigned signing fallback (`{win_mode}`)")
+
+          if fallback_lines:
+            with notes_path.open("a", encoding="utf-8") as fh:
+              fh.write("\n\n---\n\n")
+              fh.write("## Signing Mode Notes\n\n")
+              fh.write("The following builds used fallback signing modes:\n")
+              for line in fallback_lines:
+                fh.write(f"{line}\n")
+          PY
+
       - name: Create or update release
         env:
           TAG: ${{ github.ref_name }}
@@ -337,12 +477,12 @@ jobs:
             gh release edit "${TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${TITLE}" \
-              --notes-file ".github/release-body.md"
+              --notes-file "release-assets/release-notes.md"
           else
             gh release create "${TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${TITLE}" \
-              --notes-file ".github/release-body.md"
+              --notes-file "release-assets/release-notes.md"
           fi
 
       - name: Upload release assets
