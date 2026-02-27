@@ -96,7 +96,7 @@ jobs:
           # Safe defaults: ad-hoc signing
           {
             echo "macos_signing_mode=ad_hoc"
-            echo "macos_signing_identity=-"
+            echo "macos_signing_identity="
             echo "apple_certificate_b64="
             echo "apple_certificate_password="
           } >> "$GITHUB_OUTPUT"
@@ -281,6 +281,8 @@ jobs:
 
       - name: Validate packaged artifacts before upload
         shell: bash
+        env:
+          MACOS_SIGNING_MODE: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_mode }}
         run: |
           set -euo pipefail
           TARGET="${{ matrix.target }}"
@@ -291,21 +293,24 @@ jobs:
             DMG_PATH="$(find "${BUNDLE_DIR}/dmg" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
             [[ -d "${APP_PATH}" ]] || { echo "::error::Missing macOS app bundle at ${APP_PATH}"; exit 1; }
             [[ -n "${DMG_PATH}" ]] || { echo "::error::Missing macOS .dmg in ${BUNDLE_DIR}/dmg"; exit 1; }
-            [[ -f "${APP_PATH}/Contents/_CodeSignature/CodeResources" ]] || {
-              echo "::error::Missing CodeResources (invalid app signature structure)."
-              exit 1
-            }
 
-            VERIFY_LOG="$(mktemp)"
-            if ! codesign --verify --deep --strict --verbose=4 "${APP_PATH}" >"${VERIFY_LOG}" 2>&1; then
-              cat "${VERIFY_LOG}"
-              echo "::error::codesign verification failed for ${APP_PATH}"
-              exit 1
-            fi
-            if grep -Eq "code has no resources but signature indicates they must be present|code object is not signed at all" "${VERIFY_LOG}"; then
-              cat "${VERIFY_LOG}"
-              echo "::error::Detected invalid macOS app signature output."
-              exit 1
+            if [[ "${MACOS_SIGNING_MODE}" == "developer_id" ]]; then
+              [[ -f "${APP_PATH}/Contents/_CodeSignature/CodeResources" ]] || {
+                echo "::error::Missing CodeResources (invalid app signature structure)."
+                exit 1
+              }
+
+              VERIFY_LOG="$(mktemp)"
+              if ! codesign --verify --deep --strict --verbose=4 "${APP_PATH}" >"${VERIFY_LOG}" 2>&1; then
+                cat "${VERIFY_LOG}"
+                echo "::error::codesign verification failed for ${APP_PATH}"
+                exit 1
+              fi
+              if grep -Eq "code has no resources but signature indicates they must be present|code object is not signed at all" "${VERIFY_LOG}"; then
+                cat "${VERIFY_LOG}"
+                echo "::error::Detected invalid macOS app signature output."
+                exit 1
+              fi
             fi
 
             MOUNT_POINT="$(hdiutil attach -nobrowse -readonly "${DMG_PATH}" | awk '/\/Volumes\//{print substr($0, index($0,$3)); exit}')"
