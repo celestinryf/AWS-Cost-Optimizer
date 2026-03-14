@@ -10,7 +10,7 @@ Latest release:
 
 Known issue:
 - `v1.0.2` macOS assets were signed incorrectly and may show as damaged.
-- `v1.0.3` release is incomplete (missing macOS/Windows installers). Use `v1.0.4+`.
+- Releases before `v1.0.5` are missing macOS and/or Windows installers due to CI signing issues.
 
 ## List available versions
 

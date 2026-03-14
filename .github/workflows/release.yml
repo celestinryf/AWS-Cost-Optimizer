@@ -229,6 +229,20 @@ jobs:
             Write-Warning "Windows signing setup failed ($($_.Exception.Message)); using unsigned Windows build."
           }
 
+      - name: Sync tauri.conf.json version to git tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 <<PYEOF
+          import json, pathlib
+          p = pathlib.Path('client/src-tauri/tauri.conf.json')
+          cfg = json.loads(p.read_text())
+          cfg['version'] = '${VERSION}'
+          p.write_text(json.dumps(cfg, indent=2) + '\n')
+          print(f'Set tauri.conf.json version to ${VERSION}')
+          PYEOF
+
       - name: Build Tauri app
         shell: bash
         env:
@@ -416,6 +430,7 @@ jobs:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs: build-release
+    if: ${{ always() && !cancelled() && contains(toJSON(needs.build-release.result), 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -528,6 +543,7 @@ jobs:
     name: Generate package manager manifests
     runs-on: ubuntu-latest
     needs: publish-release
+    if: ${{ always() && needs.publish-release.result == 'success' }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
