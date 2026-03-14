@@ -251,6 +251,7 @@ jobs:
           APPLE_CERTIFICATE: ${{ steps.resolve_macos_signing_mode.outputs.apple_certificate_b64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ steps.resolve_macos_signing_mode.outputs.apple_certificate_password }}
           APPLE_SIGNING_IDENTITY: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_identity }}
+          MACOS_SIGNING_MODE: ${{ steps.resolve_macos_signing_mode.outputs.macos_signing_mode }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -260,6 +261,22 @@ jobs:
           WINDOWS_SIGNING_MODE: ${{ steps.configure_windows_code_signing.outputs.windows_signing_mode }}
         run: |
           set -euo pipefail
+
+          # Tauri v2 crashes if APPLE_CERTIFICATE is set (even empty) without
+          # a valid cert. Unset all Apple signing env vars in ad-hoc mode so
+          # Tauri skips certificate import entirely.
+          if [[ "${MACOS_SIGNING_MODE:-}" != "developer_id" ]]; then
+            unset APPLE_CERTIFICATE
+            unset APPLE_CERTIFICATE_PASSWORD
+            unset APPLE_SIGNING_IDENTITY
+            unset APPLE_ID
+            unset APPLE_PASSWORD
+            unset APPLE_TEAM_ID
+            unset APPLE_PROVIDER_SHORT_NAME
+            unset APPLE_API_KEY
+            unset APPLE_API_ISSUER
+          fi
+
           ARGS=(build --target "${{ matrix.target }}")
           if [[ "${RUNNER_OS}" == "Windows" && "${WINDOWS_SIGNING_MODE}" == "signed" ]]; then
             ARGS+=(--config src-tauri/tauri.windows-signing.json)
