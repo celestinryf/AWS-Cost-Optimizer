@@ -3,8 +3,12 @@
 The app uses raw sqlite3, not SQLAlchemy ORM. Alembic is used here purely
 for migration version tracking. Migrations are written with op.execute().
 
-DATABASE_URL env var overrides the ini-file default, e.g.:
-    DATABASE_URL=sqlite:///data/runs.db alembic upgrade head
+DB resolution order (first match wins):
+  1. DATABASE_URL env var  — full SQLAlchemy URL, e.g. sqlite:///data/runs.db
+  2. RUNS_DB_PATH env var  — bare file path, e.g. data/runs.db (wrapped in
+                             sqlite:///…) — mirrors the app's own default in
+                             server/app/dependencies.py
+  3. sqlalchemy.url in alembic.ini
 """
 
 import os
@@ -19,8 +23,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Allow DATABASE_URL env var to override alembic.ini value.
+# Resolve the target DB using the same precedence the application uses.
+# DATABASE_URL takes priority; RUNS_DB_PATH is the fallback so that Alembic
+# always migrates the same file the app is reading from.
 database_url = os.environ.get("DATABASE_URL")
+if not database_url:
+    runs_db_path = os.environ.get("RUNS_DB_PATH")
+    if runs_db_path:
+        database_url = f"sqlite:///{runs_db_path}"
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 

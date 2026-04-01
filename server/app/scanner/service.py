@@ -61,7 +61,7 @@ class ScannerService:
     def _scan_bucket(self, bucket: str, max_objects: int) -> list[Recommendation]:
         recommendations: list[Recommendation] = []
 
-        object_recs, total_size_bytes, standard_size_bytes = self._scan_objects(bucket, max_objects)
+        object_recs, _total_size_bytes, standard_size_bytes = self._scan_objects(bucket, max_objects)
         recommendations.extend(object_recs)
         lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes)
         if lifecycle_rec:

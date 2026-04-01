@@ -460,12 +460,10 @@ class TestNoneFieldSafety:
         resp = _execute([rec], [score], _req(mode=ExecutionMode.FULL, dry_run=False))
         assert resp.action_results[0].status == ExecutionActionStatus.EXECUTED
 
-    def test_delete_incomplete_upload_with_upload_id_set_executes(self):
+    def test_delete_incomplete_upload_with_upload_id_set_executes(self, s3_mock):
         """Sanity: DELETE_INCOMPLETE_UPLOAD with upload_id set → EXECUTED."""
         # Need to create a real multipart upload in moto for abort to succeed.
-        import boto3
-        s3 = boto3.client("s3", region_name="us-east-1")
-        resp = s3.create_multipart_upload(Bucket="test-bucket", Key="test/key.parquet")
+        resp = s3_mock.create_multipart_upload(Bucket="test-bucket", Key="test/key.parquet")
         upload_id = resp["UploadId"]
 
         rec = _rec(
