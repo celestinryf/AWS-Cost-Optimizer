@@ -13,6 +13,7 @@ from app.models import (
     RiskFactorScores,
     RiskLevel,
     RiskScore,
+    StorageClass,
 )
 
 svc = ExecutionService()
@@ -30,6 +31,8 @@ def _rec(
     storage_class="STANDARD",
     key="test/key.parquet",
     last_modified=None,
+    upload_id: str | None = None,
+    target_storage_class: StorageClass | None = StorageClass.GLACIER_IR,
 ) -> Recommendation:
     return Recommendation(
         id=str(uuid.uuid4()),
@@ -43,6 +46,8 @@ def _rec(
         size_bytes=size_bytes,
         storage_class=storage_class,
         last_modified=last_modified,
+        upload_id=upload_id,
+        target_storage_class=target_storage_class,
     )
 
 

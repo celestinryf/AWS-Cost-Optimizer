@@ -98,6 +98,59 @@ class TestLifecycleDetection:
         assert lifecycle_recs[0].key is None
         assert lifecycle_recs[0].bucket == "test-bucket"
 
+    def test_lifecycle_savings_positive_when_bucket_has_objects(self, svc, s3_mock):
+        """Lifecycle savings must be > 0 when the bucket contains objects (not hardcoded 1.0).
+
+        Adds a 10 MB object so the savings calculation produces a non-zero value
+        after 4-decimal rounding (~0.0002 $/month at current pricing constants).
+        """
+        s3_mock.put_object(Bucket="test-bucket", Key="large/file.bin", Body=b"x" * 10_000_000)
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        lifecycle_recs = [
+            r for r in result
+            if r.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY
+        ]
+        assert len(lifecycle_recs) == 1
+        assert lifecycle_recs[0].estimated_monthly_savings > 0
+
+    def test_lifecycle_savings_excludes_non_standard_objects(self, svc, s3_mock):
+        """Objects already in non-STANDARD classes must NOT inflate lifecycle savings.
+
+        Adds a large GLACIER_IR object and a small STANDARD object. The lifecycle
+        savings should reflect only the STANDARD object's size, not the total.
+        """
+        # 100 MB in GLACIER_IR — should NOT contribute to lifecycle savings
+        s3_mock.put_object(
+            Bucket="test-bucket",
+            Key="cold/archive.bin",
+            Body=b"g" * 100_000_000,
+            StorageClass="GLACIER_IR",
+        )
+        # 10 MB in STANDARD — should be the only meaningful contributor
+        s3_mock.put_object(
+            Bucket="test-bucket",
+            Key="hot/recent.bin",
+            Body=b"s" * 10_000_000,
+        )
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        lifecycle_recs = [
+            r for r in result
+            if r.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY
+        ]
+        assert len(lifecycle_recs) == 1
+        savings = lifecycle_recs[0].estimated_monthly_savings
+
+        # The conftest puts two small STANDARD objects (~1.5 KB total) plus
+        # our 10 MB STANDARD object. Total STANDARD ~ 10_001_536 bytes.
+        # If the bug were present, the 100 MB GLACIER_IR object would push
+        # savings above 0.0017 (100 MB * 0.019 $/GB/mo / 1024^3).
+        # With the fix, savings should be well under 0.001.
+        assert savings < 0.001, (
+            f"Lifecycle savings {savings} is too high — non-STANDARD objects "
+            f"are likely inflating the estimate"
+        )
+        assert savings > 0, "Savings should still be positive for the STANDARD objects"
+
 
 # ---------------------------------------------------------------------------
 # Object-age-based recommendations (patched thresholds so moto objects qualify)
@@ -153,6 +206,17 @@ class TestObjectAgeRecommendations:
             if rec.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
                 assert "GLACIER_IR" in rec.recommended_action
 
+    def test_change_storage_class_rec_has_target_storage_class(self, svc, monkeypatch):
+        """CHANGE_STORAGE_CLASS recs must have target_storage_class set (not rely on string parsing)."""
+        from app.models import StorageClass
+        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
+        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        change_recs = [r for r in result if r.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS]
+        assert len(change_recs) >= 1
+        for rec in change_recs:
+            assert rec.target_storage_class == StorageClass.GLACIER_IR
+
 
 # ---------------------------------------------------------------------------
 # Multipart upload detection
@@ -169,6 +233,20 @@ class TestMultipartUploadDetection:
         result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
         types = [r.recommendation_type for r in result]
         assert RecommendationType.DELETE_INCOMPLETE_UPLOAD in types
+
+    def test_incomplete_upload_rec_has_upload_id_set(self, svc, s3_mock, monkeypatch):
+        """DELETE_INCOMPLETE_UPLOAD recs must carry the upload_id so the executor can abort."""
+        monkeypatch.setattr("app.scanner.service._MULTIPART_DAYS", -1)
+        create_resp = s3_mock.create_multipart_upload(Bucket="test-bucket", Key="uploads/data.bin")
+        expected_upload_id = create_resp["UploadId"]
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        upload_recs = [
+            r for r in result
+            if r.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD
+        ]
+        assert len(upload_recs) == 1
+        assert upload_recs[0].upload_id == expected_upload_id
+        assert upload_recs[0].storage_class is None  # no longer abused for upload_id
 
     def test_no_multipart_recommendation_if_no_uploads(self, svc):
         result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))

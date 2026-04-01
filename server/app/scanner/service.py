@@ -1,16 +1,19 @@
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any
 import uuid
 
 import boto3
 from botocore.exceptions import ClientError
 
-from app.models import Recommendation, RecommendationType, RiskLevel, ScanRequest
+from app.models import Recommendation, RecommendationType, RiskLevel, ScanRequest, StorageClass
+
+_log = logging.getLogger(__name__)
 
 _COLD_DAYS = 90        # STANDARD object older than this → CHANGE_STORAGE_CLASS
 _STALE_DAYS = 365      # Any object older than this → DELETE_STALE_OBJECT
 _MULTIPART_DAYS = 7    # Incomplete upload older than this → DELETE_INCOMPLETE_UPLOAD
-_TARGET_CLASS = "GLACIER_IR"
+_TARGET_CLASS = StorageClass.GLACIER_IR
 _STANDARD_PRICE = 0.023   # $/GB/month
 _GLACIER_IR_PRICE = 0.004
 
@@ -58,18 +61,21 @@ class ScannerService:
     def _scan_bucket(self, bucket: str, max_objects: int) -> list[Recommendation]:
         recommendations: list[Recommendation] = []
 
-        recommendations.extend(self._scan_objects(bucket, max_objects))
-        lifecycle_rec = self._check_lifecycle(bucket)
+        object_recs, total_size_bytes, standard_size_bytes = self._scan_objects(bucket, max_objects)
+        recommendations.extend(object_recs)
+        lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes)
         if lifecycle_rec:
             recommendations.append(lifecycle_rec)
         recommendations.extend(self._check_multipart_uploads(bucket))
 
         return recommendations
 
-    def _scan_objects(self, bucket: str, max_objects: int) -> list[Recommendation]:
+    def _scan_objects(self, bucket: str, max_objects: int) -> tuple[list[Recommendation], int, int]:
         recs: list[Recommendation] = []
         now = datetime.now(timezone.utc)
         count = 0
+        total_size_bytes = 0
+        standard_size_bytes = 0
 
         try:
             paginator = self.s3.get_paginator("list_objects_v2")
@@ -81,10 +87,21 @@ class ScannerService:
 
                     key: str = obj["Key"]
                     size_bytes: int = obj.get("Size", 0)
-                    storage_class: str = obj.get("StorageClass", "STANDARD")
+                    storage_class_raw: str = obj.get("StorageClass", "STANDARD")
+                    if storage_class_raw in StorageClass._value2member_map_:
+                        storage_class = StorageClass(storage_class_raw)
+                    else:
+                        _log.warning(
+                            "Unknown S3 storage class %r for %s/%s — not in StorageClass enum",
+                            storage_class_raw, bucket, key,
+                        )
+                        storage_class = None
                     last_modified: datetime = obj["LastModified"]
                     age_days = (now - last_modified).days
                     size_gb = size_bytes / (1024 ** 3)
+                    total_size_bytes += size_bytes
+                    if storage_class_raw == "STANDARD":
+                        standard_size_bytes += size_bytes
 
                     if age_days >= _STALE_DAYS:
                         recs.append(Recommendation(
@@ -103,7 +120,7 @@ class ScannerService:
                             storage_class=storage_class,
                             last_modified=last_modified,
                         ))
-                    elif age_days >= _COLD_DAYS and storage_class == "STANDARD":
+                    elif age_days >= _COLD_DAYS and storage_class_raw == "STANDARD":
                         savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
@@ -115,11 +132,12 @@ class ScannerService:
                                 f"Object has been in STANDARD storage for {age_days} days "
                                 f"without modification."
                             ),
-                            recommended_action=f"Transition to {_TARGET_CLASS}",
+                            recommended_action=f"Transition to {_TARGET_CLASS.value}",
                             estimated_monthly_savings=savings,
                             size_bytes=size_bytes,
                             storage_class=storage_class,
                             last_modified=last_modified,
+                            target_storage_class=_TARGET_CLASS,
                         ))
 
                 if count >= max_objects:
@@ -130,15 +148,17 @@ class ScannerService:
             if code not in ("AccessDenied", "NoSuchBucket", "AllAccessDisabled"):
                 raise
 
-        return recs
+        return recs, total_size_bytes, standard_size_bytes
 
-    def _check_lifecycle(self, bucket: str) -> Recommendation | None:
+    def _check_lifecycle(self, bucket: str, *, total_size_bytes: int = 0) -> Recommendation | None:
         try:
             self.s3.get_bucket_lifecycle_configuration(Bucket=bucket)
             return None  # lifecycle policy already exists
         except ClientError as e:
             code = e.response["Error"]["Code"]
             if code == "NoSuchLifecycleConfiguration":
+                size_gb = total_size_bytes / (1024 ** 3)
+                estimated_savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
                 return Recommendation(
                     id=str(uuid.uuid4()),
                     bucket=bucket,
@@ -149,7 +169,7 @@ class ScannerService:
                     recommended_action=(
                         "Add lifecycle rules for 90-day archive and 7-day multipart abort."
                     ),
-                    estimated_monthly_savings=1.0,
+                    estimated_monthly_savings=estimated_savings,
                     size_bytes=0,
                     storage_class=None,
                     last_modified=None,
@@ -182,8 +202,7 @@ class ScannerService:
                             recommended_action="Abort incomplete multipart upload",
                             estimated_monthly_savings=0.0,
                             size_bytes=0,
-                            # Store upload_id in storage_class — used by executor
-                            storage_class=upload["UploadId"],
+                            upload_id=upload["UploadId"],
                             last_modified=initiated,
                         ))
         except ClientError as e:

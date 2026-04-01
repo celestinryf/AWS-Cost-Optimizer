@@ -398,3 +398,105 @@ class TestUpdateRollbackStatus:
     def test_update_nonexistent_audit_id_returns_false(self, store):
         result = store.update_rollback_status("ghost-audit", RollbackStatus.ROLLED_BACK)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility: legacy records with upload_id stored in storage_class
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestLegacyDeserialization:
+    def test_old_delete_incomplete_upload_with_upload_id_in_storage_class_field(self, store, tmp_path):
+        """Legacy DELETE_INCOMPLETE_UPLOAD records stored upload_id in storage_class.
+
+        After the StorageClass enum was introduced, deserializing those records
+        would fail unless we coerce unknown storage class strings to None.
+        """
+        import json, sqlite3
+        db_path = str(tmp_path / "legacy.db")
+        legacy_store = RunStore(db_path=db_path)
+
+        # Craft a raw JSON payload that mimics a pre-fix record:
+        # storage_class holds the upload ID, no upload_id key at all.
+        legacy_rec_json = json.dumps([{
+            "id": "legacy-001",
+            "bucket": "my-bucket",
+            "key": "uploads/file.bin",
+            "recommendation_type": "delete_incomplete_upload",
+            "risk_level": "low",
+            "reason": "Incomplete for 10 days.",
+            "recommended_action": "Abort incomplete multipart upload",
+            "estimated_monthly_savings": 0.0,
+            "size_bytes": 0,
+            "storage_class": "7yWlFuK_SFHYMQi3xeTJ3Vqz5f1a9FImBqgjn7UT",  # legacy abuse
+            "last_modified": "2025-01-01T00:00:00+00:00",
+        }])
+
+        # Inject directly into SQLite to bypass the current Python create path.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id, status, recommendations_json, scores_json,
+                savings_details_json, savings_summary_json, execution_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy-run-1", "scanned", legacy_rec_json, "[]", "[]", None, None, now, now),
+        )
+        conn.commit()
+        conn.close()
+
+        # Should not raise; unknown storage_class string coerced to None.
+        record = legacy_store.get("legacy-run-1")
+        assert record is not None
+        assert len(record.recommendations) == 1
+        rec = record.recommendations[0]
+        assert rec.storage_class is None  # coerced — was an upload ID string
+        assert rec.upload_id is None      # not present in old records
+
+    def test_old_change_storage_class_without_new_fields_deserializes(self, store, tmp_path):
+        """Old CHANGE_STORAGE_CLASS records without upload_id/target_storage_class deserialize
+        safely with both fields defaulting to None."""
+        import json, sqlite3
+        db_path = str(tmp_path / "legacy2.db")
+        legacy_store = RunStore(db_path=db_path)
+
+        legacy_rec_json = json.dumps([{
+            "id": "legacy-002",
+            "bucket": "my-bucket",
+            "key": "data/file.parquet",
+            "recommendation_type": "change_storage_class",
+            "risk_level": "medium",
+            "reason": "Cold for 120 days.",
+            "recommended_action": "Transition to GLACIER_IR",
+            "estimated_monthly_savings": 5.0,
+            "size_bytes": 1073741824,
+            "storage_class": "STANDARD",
+            "last_modified": "2024-06-01T00:00:00+00:00",
+            # No upload_id, no target_storage_class
+        }])
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id, status, recommendations_json, scores_json,
+                savings_details_json, savings_summary_json, execution_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy-run-2", "scanned", legacy_rec_json, "[]", "[]", None, None, now, now),
+        )
+        conn.commit()
+        conn.close()
+
+        record = legacy_store.get("legacy-run-2")
+        assert record is not None
+        rec = record.recommendations[0]
+        assert rec.upload_id is None
+        assert rec.target_storage_class is None
