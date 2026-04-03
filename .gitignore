@@ -10,7 +10,7 @@
 *.swo
 
 # Local tool config
-.claude/settings.local.json
+.claude/
 
 # Env / secrets
 .env
