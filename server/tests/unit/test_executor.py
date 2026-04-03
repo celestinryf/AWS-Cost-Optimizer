@@ -15,6 +15,7 @@ from app.models import (
     RiskLevel,
     RiskScore,
     RollbackStatus,
+    StorageClass,
 )
 
 svc = ExecutionService()
@@ -32,6 +33,8 @@ def _rec(
     last_modified=None,
     reason="Object appears cold based on age and path.",
     recommended_action="Transition to GLACIER_IR",
+    upload_id: str | None = None,
+    target_storage_class: StorageClass | None = StorageClass.GLACIER_IR,
 ) -> Recommendation:
     return Recommendation(
         id=str(uuid.uuid4()),
@@ -45,6 +48,8 @@ def _rec(
         size_bytes=size_bytes,
         storage_class=storage_class,
         last_modified=last_modified,
+        upload_id=upload_id,
+        target_storage_class=target_storage_class,
     )
 
 
@@ -415,3 +420,57 @@ class TestResponseCounts:
         executed_actions = [r for r in resp.action_results
                             if r.status == ExecutionActionStatus.EXECUTED]
         assert resp.executed == len(executed_actions)
+
+
+# ---------------------------------------------------------------------------
+# None-safety: executor must fail clearly when required fields are missing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestNoneFieldSafety:
+    def test_change_storage_class_none_target_fails_with_clear_message(self):
+        """CHANGE_STORAGE_CLASS with target_storage_class=None → FAILED with clear message."""
+        rec = _rec(rec_type=RecommendationType.CHANGE_STORAGE_CLASS, target_storage_class=None)
+        score = _score(rec.id)
+        resp = _execute([rec], [score], _req(mode=ExecutionMode.FULL, dry_run=False))
+        result = resp.action_results[0]
+        assert result.status == ExecutionActionStatus.FAILED
+        assert "target_storage_class" in result.message
+
+    def test_delete_incomplete_upload_none_upload_id_fails_with_clear_message(self):
+        """DELETE_INCOMPLETE_UPLOAD with upload_id=None → FAILED with clear message."""
+        rec = _rec(
+            rec_type=RecommendationType.DELETE_INCOMPLETE_UPLOAD,
+            upload_id=None,
+            target_storage_class=None,
+        )
+        score = _score(rec.id)
+        resp = _execute([rec], [score], _req(mode=ExecutionMode.FULL, dry_run=False))
+        result = resp.action_results[0]
+        assert result.status == ExecutionActionStatus.FAILED
+        assert "upload_id" in result.message
+
+    def test_change_storage_class_with_target_set_executes(self):
+        """Sanity: CHANGE_STORAGE_CLASS with target_storage_class set → EXECUTED."""
+        rec = _rec(
+            rec_type=RecommendationType.CHANGE_STORAGE_CLASS,
+            target_storage_class=StorageClass.GLACIER_IR,
+        )
+        score = _score(rec.id)
+        resp = _execute([rec], [score], _req(mode=ExecutionMode.FULL, dry_run=False))
+        assert resp.action_results[0].status == ExecutionActionStatus.EXECUTED
+
+    def test_delete_incomplete_upload_with_upload_id_set_executes(self, s3_mock):
+        """Sanity: DELETE_INCOMPLETE_UPLOAD with upload_id set → EXECUTED."""
+        # Need to create a real multipart upload in moto for abort to succeed.
+        resp = s3_mock.create_multipart_upload(Bucket="test-bucket", Key="test/key.parquet")
+        upload_id = resp["UploadId"]
+
+        rec = _rec(
+            rec_type=RecommendationType.DELETE_INCOMPLETE_UPLOAD,
+            upload_id=upload_id,
+            target_storage_class=None,
+        )
+        score = _score(rec.id)
+        resp = _execute([rec], [score], _req(mode=ExecutionMode.FULL, dry_run=False))
+        assert resp.action_results[0].status == ExecutionActionStatus.EXECUTED

@@ -268,8 +268,11 @@ class ScoringService:
     def _storage_class_savings(self, recommendation: Recommendation) -> SavingsEstimate:
         assumptions: list[str] = []
         size_gb = recommendation.size_bytes / (1024 ** 3)
-        current_class = (recommendation.storage_class or "STANDARD").upper()
-        target_class = self._parse_target_class(recommendation.recommended_action)
+        current_class = recommendation.storage_class.value if recommendation.storage_class else "STANDARD"
+        if recommendation.target_storage_class is not None:
+            target_class = recommendation.target_storage_class.value
+        else:
+            target_class = self._parse_target_class(recommendation.recommended_action)
 
         current_rate = self.STORAGE_PRICING.get(current_class, self.STORAGE_PRICING["STANDARD"])
         target_rate = self.STORAGE_PRICING.get(target_class, self.STORAGE_PRICING["GLACIER_IR"])

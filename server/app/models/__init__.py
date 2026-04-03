@@ -24,4 +24,5 @@ from .contracts import (
     SavingsSummary,
     ScoreRequest,
     ScoreResponse,
+    StorageClass,
 )

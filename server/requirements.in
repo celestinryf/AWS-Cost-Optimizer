@@ -1,4 +1,6 @@
+alembic==1.18.4
 boto3==1.42.24
 fastapi==0.128.0
 pydantic==2.12.5
+sqlalchemy==2.0.48
 uvicorn==0.40.0

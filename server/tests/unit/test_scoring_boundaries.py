@@ -341,11 +341,12 @@ class TestStorageClassSavingsEdges:
         assert estimate.break_even_days is None
 
     def test_unknown_storage_class_falls_back_to_standard_rate(self):
-        """Unknown current class → falls back to STANDARD pricing."""
+        """Unknown S3 storage classes are coerced to None by the scanner.
+        storage_class=None → scorer falls back to STANDARD pricing."""
         rec = _rec(
             rec_type=RecommendationType.CHANGE_STORAGE_CLASS,
             size_bytes=GB,
-            storage_class="SUPER_CHEAP_CLASS",
+            storage_class=None,
             recommended_action="Transition to GLACIER_IR",
         )
         estimate = svc._storage_class_savings(rec)

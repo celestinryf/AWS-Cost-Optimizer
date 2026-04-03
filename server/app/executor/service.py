@@ -283,7 +283,9 @@ class ExecutionService:
         rec = recommendation
         try:
             if rec.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
-                target = rec.recommended_action.split()[-1]
+                if rec.target_storage_class is None:
+                    return False, "Cannot execute: target_storage_class is not set on recommendation.", {}
+                target = rec.target_storage_class.value
                 self.s3.copy_object(
                     Bucket=rec.bucket,
                     Key=rec.key,
@@ -333,12 +335,12 @@ class ExecutionService:
                 return True, f"Applied lifecycle policy to {rec.bucket}.", extra
 
             if rec.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD:
-                # upload_id stored in storage_class field by scanner
-                upload_id = rec.storage_class or ""
+                if rec.upload_id is None:
+                    return False, "Cannot execute: upload_id is not set on recommendation.", {}
                 self.s3.abort_multipart_upload(
                     Bucket=rec.bucket,
                     Key=rec.key,
-                    UploadId=upload_id,
+                    UploadId=rec.upload_id,
                 )
                 return True, f"Aborted incomplete upload for {rec.key}.", {}
 

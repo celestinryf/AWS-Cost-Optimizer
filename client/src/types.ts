@@ -12,6 +12,17 @@ export type RecommendationType =
 
 export type RiskLevel = "low" | "medium" | "high";
 
+export type StorageClass =
+  | "STANDARD"
+  | "REDUCED_REDUNDANCY"
+  | "GLACIER"
+  | "STANDARD_IA"
+  | "ONEZONE_IA"
+  | "INTELLIGENT_TIERING"
+  | "DEEP_ARCHIVE"
+  | "GLACIER_IR"
+  | "EXPRESS_ONEZONE";
+
 export type ExecutionMode = "dry_run" | "safe" | "standard" | "full";
 
 export type ExecutionActionStatus =
@@ -39,8 +50,10 @@ export interface Recommendation {
   recommended_action: string;
   estimated_monthly_savings: number;
   size_bytes: number;
-  storage_class: string | null;
+  storage_class: StorageClass | null;
   last_modified: string | null;
+  upload_id: string | null;
+  target_storage_class: StorageClass | null;
 }
 
 export interface RiskFactorScores {

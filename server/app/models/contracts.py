@@ -1,8 +1,11 @@
 from datetime import datetime
 from enum import Enum
+import logging
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_log = logging.getLogger(__name__)
 
 
 class RiskLevel(str, Enum):
@@ -16,6 +19,18 @@ class RecommendationType(str, Enum):
     ADD_LIFECYCLE_POLICY = "add_lifecycle_policy"
     DELETE_INCOMPLETE_UPLOAD = "delete_incomplete_upload"
     DELETE_STALE_OBJECT = "delete_stale_object"
+
+
+class StorageClass(str, Enum):
+    STANDARD = "STANDARD"
+    REDUCED_REDUNDANCY = "REDUCED_REDUNDANCY"
+    GLACIER = "GLACIER"
+    STANDARD_IA = "STANDARD_IA"
+    ONEZONE_IA = "ONEZONE_IA"
+    INTELLIGENT_TIERING = "INTELLIGENT_TIERING"
+    DEEP_ARCHIVE = "DEEP_ARCHIVE"
+    GLACIER_IR = "GLACIER_IR"
+    EXPRESS_ONEZONE = "EXPRESS_ONEZONE"
 
 
 class ExecutionMode(str, Enum):
@@ -41,8 +56,28 @@ class Recommendation(BaseModel):
     recommended_action: str
     estimated_monthly_savings: float = Field(ge=0)
     size_bytes: int = Field(ge=0)
-    storage_class: Optional[str] = None
+    storage_class: Optional[StorageClass] = None
     last_modified: Optional[datetime] = None
+    upload_id: Optional[str] = None
+    target_storage_class: Optional[StorageClass] = None
+
+    @field_validator("storage_class", mode="before")
+    @classmethod
+    def coerce_storage_class(cls, v: object) -> object:
+        """Coerce unknown storage class strings to None.
+
+        Existing database records for DELETE_INCOMPLETE_UPLOAD stored the
+        upload ID in the storage_class field. Coercing unrecognized values to
+        None prevents deserialization failures when reading those legacy records.
+        """
+        if v is None:
+            return None
+        if isinstance(v, str) and v not in StorageClass._value2member_map_:
+            _log.warning(
+                "Unknown S3 storage class %r coerced to None — not in StorageClass enum", v
+            )
+            return None
+        return v
 
 
 class RiskFactorScores(BaseModel):
