@@ -129,6 +129,10 @@ class ScanRequest(BaseModel):
     include_buckets: list[str] = Field(default_factory=list)
     exclude_buckets: list[str] = Field(default_factory=list)
     max_objects_per_bucket: int = Field(default=1000, ge=1, le=100000)
+    cold_days: int = Field(default=90, ge=0, le=3650)
+    stale_days: int = Field(default=365, ge=0, le=3650)
+    multipart_days: int = Field(default=7, ge=0, le=365)
+    target_storage_class: StorageClass = Field(default=StorageClass.GLACIER_IR)
 
 
 class ScanResponse(BaseModel):

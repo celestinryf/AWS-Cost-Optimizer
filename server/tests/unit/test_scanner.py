@@ -3,7 +3,7 @@
 import pytest
 import boto3
 
-from app.models import RecommendationType, ScanRequest
+from app.models import RecommendationType, ScanRequest, StorageClass
 from app.scanner.service import ScannerService
 
 
@@ -153,69 +153,71 @@ class TestLifecycleDetection:
 
 
 # ---------------------------------------------------------------------------
-# Object-age-based recommendations (patched thresholds so moto objects qualify)
+# Object-age-based recommendations (use threshold params so moto objects qualify)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
 class TestObjectAgeRecommendations:
-    def test_change_storage_class_recommended_for_standard_objects(self, svc, monkeypatch):
-        """Patch _COLD_DAYS to -1 so all objects are 'cold' → CHANGE_STORAGE_CLASS rec."""
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+    def test_change_storage_class_recommended_for_standard_objects(self, svc):
+        """cold_days=0 so all objects are 'cold' → CHANGE_STORAGE_CLASS rec."""
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], cold_days=0, stale_days=3650))
         types = [r.recommendation_type for r in result]
         assert RecommendationType.CHANGE_STORAGE_CLASS in types
 
-    def test_delete_stale_object_recommended_for_very_old_objects(self, svc, monkeypatch):
-        """Patch _STALE_DAYS to -1 so all objects are 'stale' → DELETE_STALE_OBJECT rec."""
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", -1)
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+    def test_delete_stale_object_recommended_for_very_old_objects(self, svc):
+        """stale_days=0 so all objects are 'stale' → DELETE_STALE_OBJECT rec."""
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], stale_days=0))
         types = [r.recommendation_type for r in result]
         assert RecommendationType.DELETE_STALE_OBJECT in types
 
-    def test_stale_object_takes_priority_over_storage_class(self, svc, monkeypatch):
+    def test_stale_object_takes_priority_over_storage_class(self, svc):
         """When an object qualifies for both DELETE_STALE and CHANGE_CLASS,
         only DELETE_STALE is returned (not both)."""
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], stale_days=0, cold_days=0))
         for rec in result:
             if rec.key == "test/key.parquet":
                 assert rec.recommendation_type == RecommendationType.DELETE_STALE_OBJECT
 
-    def test_change_storage_class_only_for_standard_class(self, svc, s3_mock, monkeypatch):
+    def test_change_storage_class_only_for_standard_class(self, svc, s3_mock):
         """Objects already in GLACIER_IR should NOT get a CHANGE_STORAGE_CLASS rec."""
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
         s3_mock.put_object(
             Bucket="test-bucket",
             Key="glacier/file.parquet",
             Body=b"data",
             StorageClass="GLACIER_IR",
         )
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], cold_days=0, stale_days=3650))
         for rec in result:
             if rec.key == "glacier/file.parquet":
                 assert rec.recommendation_type != RecommendationType.CHANGE_STORAGE_CLASS
 
-    def test_storage_class_transition_target_is_glacier_ir(self, svc, monkeypatch):
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+    def test_storage_class_transition_target_is_glacier_ir(self, svc):
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], cold_days=0, stale_days=3650))
         for rec in result:
             if rec.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
                 assert "GLACIER_IR" in rec.recommended_action
 
-    def test_change_storage_class_rec_has_target_storage_class(self, svc, monkeypatch):
+    def test_change_storage_class_rec_has_target_storage_class(self, svc):
         """CHANGE_STORAGE_CLASS recs must have target_storage_class set (not rely on string parsing)."""
-        from app.models import StorageClass
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], cold_days=0, stale_days=3650))
         change_recs = [r for r in result if r.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS]
         assert len(change_recs) >= 1
         for rec in change_recs:
             assert rec.target_storage_class == StorageClass.GLACIER_IR
+
+    def test_custom_target_storage_class(self, svc):
+        """target_storage_class param should change the recommended target."""
+        result = svc.scan(ScanRequest(
+            include_buckets=["test-bucket"],
+            cold_days=0,
+            stale_days=3650,
+            target_storage_class=StorageClass.DEEP_ARCHIVE,
+        ))
+        change_recs = [r for r in result if r.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS]
+        assert len(change_recs) >= 1
+        for rec in change_recs:
+            assert rec.target_storage_class == StorageClass.DEEP_ARCHIVE
+            assert "DEEP_ARCHIVE" in rec.recommended_action
 
 
 # ---------------------------------------------------------------------------
@@ -224,22 +226,20 @@ class TestObjectAgeRecommendations:
 
 @pytest.mark.unit
 class TestMultipartUploadDetection:
-    def test_incomplete_upload_recommended_for_old_multipart(self, svc, s3_mock, monkeypatch):
-        """Patch _MULTIPART_DAYS to -1 so all multipart uploads qualify."""
-        monkeypatch.setattr("app.scanner.service._MULTIPART_DAYS", -1)
+    def test_incomplete_upload_recommended_for_old_multipart(self, svc, s3_mock):
+        """multipart_days=0 so all multipart uploads qualify."""
         # Create an in-progress multipart upload
         resp = s3_mock.create_multipart_upload(Bucket="test-bucket", Key="uploads/data.bin")
         _ = resp["UploadId"]  # noqa: upload in progress
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], multipart_days=0))
         types = [r.recommendation_type for r in result]
         assert RecommendationType.DELETE_INCOMPLETE_UPLOAD in types
 
-    def test_incomplete_upload_rec_has_upload_id_set(self, svc, s3_mock, monkeypatch):
+    def test_incomplete_upload_rec_has_upload_id_set(self, svc, s3_mock):
         """DELETE_INCOMPLETE_UPLOAD recs must carry the upload_id so the executor can abort."""
-        monkeypatch.setattr("app.scanner.service._MULTIPART_DAYS", -1)
         create_resp = s3_mock.create_multipart_upload(Bucket="test-bucket", Key="uploads/data.bin")
         expected_upload_id = create_resp["UploadId"]
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"]))
+        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], multipart_days=0))
         upload_recs = [
             r for r in result
             if r.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD
@@ -275,14 +275,17 @@ class TestRecommendationFieldValidity:
         for rec in result:
             assert rec.size_bytes >= 0
 
-    def test_max_objects_per_bucket_limit_respected(self, svc, s3_mock, monkeypatch):
+    def test_max_objects_per_bucket_limit_respected(self, svc, s3_mock):
         """max_objects_per_bucket=1 → only 1 object scanned."""
-        monkeypatch.setattr("app.scanner.service._COLD_DAYS", -1)
-        monkeypatch.setattr("app.scanner.service._STALE_DAYS", 9999)
         # Add a second STANDARD object
         s3_mock.put_object(Bucket="test-bucket", Key="second/file.parquet", Body=b"y" * 512)
         # With max_objects=1, only 1 object-based rec should appear
-        result = svc.scan(ScanRequest(include_buckets=["test-bucket"], max_objects_per_bucket=1))
+        result = svc.scan(ScanRequest(
+            include_buckets=["test-bucket"],
+            max_objects_per_bucket=1,
+            cold_days=0,
+            stale_days=3650,
+        ))
         object_recs = [
             r for r in result
             if r.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS

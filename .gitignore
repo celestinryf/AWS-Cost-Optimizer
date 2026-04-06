@@ -11,6 +11,7 @@
 
 # Local tool config
 .claude/
+CLAUDE.md
 
 # Env / secrets
 .env

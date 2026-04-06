@@ -1,19 +1,15 @@
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any
 import uuid
 
 import boto3
 from botocore.exceptions import ClientError
+from mypy_boto3_s3 import S3Client
 
 from app.models import Recommendation, RecommendationType, RiskLevel, ScanRequest, StorageClass
 
 _log = logging.getLogger(__name__)
 
-_COLD_DAYS = 90        # STANDARD object older than this → CHANGE_STORAGE_CLASS
-_STALE_DAYS = 365      # Any object older than this → DELETE_STALE_OBJECT
-_MULTIPART_DAYS = 7    # Incomplete upload older than this → DELETE_INCOMPLETE_UPLOAD
-_TARGET_CLASS = StorageClass.GLACIER_IR
 _STANDARD_PRICE = 0.023   # $/GB/month
 _GLACIER_IR_PRICE = 0.004
 
@@ -28,13 +24,13 @@ class ScannerService:
     s3:ListBucketMultipartUploads.
     """
 
-    def __init__(self, s3_client: Any = None) -> None:
-        self._s3 = s3_client
+    def __init__(self, s3_client: S3Client | None = None) -> None:
+        self._s3: S3Client | None = s3_client
 
     @property
-    def s3(self) -> Any:
+    def s3(self) -> S3Client:
         if self._s3 is None:
-            self._s3 = boto3.client("s3")
+            self._s3 = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
         return self._s3
 
     def scan(self, request: ScanRequest) -> list[Recommendation]:
@@ -46,31 +42,49 @@ class ScannerService:
             try:
                 resp = self.s3.list_buckets()
                 buckets = [
-                    b["Name"] for b in resp.get("Buckets", []) if b["Name"] not in excluded
+                    name for b in resp.get("Buckets", [])
+                    if (name := b.get("Name")) is not None and name not in excluded
                 ]
             except ClientError:
                 buckets = []
 
+        cold_days = request.cold_days
+        stale_days = request.stale_days
+        multipart_days = request.multipart_days
+        target_class = request.target_storage_class
+
         recommendations: list[Recommendation] = []
         for bucket in buckets:
             recommendations.extend(
-                self._scan_bucket(bucket, request.max_objects_per_bucket)
+                self._scan_bucket(bucket, request.max_objects_per_bucket, cold_days, stale_days, multipart_days, target_class)
             )
         return recommendations
 
-    def _scan_bucket(self, bucket: str, max_objects: int) -> list[Recommendation]:
+    def _scan_bucket(
+        self,
+        bucket: str,
+        max_objects: int,
+        cold_days: int,
+        stale_days: int,
+        multipart_days: int,
+        target_class: StorageClass,
+    ) -> list[Recommendation]:
         recommendations: list[Recommendation] = []
 
-        object_recs, _total_size_bytes, standard_size_bytes = self._scan_objects(bucket, max_objects)
+        object_recs, _total_size_bytes, standard_size_bytes = self._scan_objects(
+            bucket, max_objects, cold_days, stale_days, target_class,
+        )
         recommendations.extend(object_recs)
         lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes)
         if lifecycle_rec:
             recommendations.append(lifecycle_rec)
-        recommendations.extend(self._check_multipart_uploads(bucket))
+        recommendations.extend(self._check_multipart_uploads(bucket, multipart_days))
 
         return recommendations
 
-    def _scan_objects(self, bucket: str, max_objects: int) -> tuple[list[Recommendation], int, int]:
+    def _scan_objects(
+        self, bucket: str, max_objects: int, cold_days: int, stale_days: int, target_class: StorageClass,
+    ) -> tuple[list[Recommendation], int, int]:
         recs: list[Recommendation] = []
         now = datetime.now(timezone.utc)
         count = 0
@@ -85,7 +99,10 @@ class ScannerService:
                         break
                     count += 1
 
-                    key: str = obj["Key"]
+                    key = obj.get("Key")
+                    last_modified = obj.get("LastModified")
+                    if key is None or last_modified is None:
+                        continue
                     size_bytes: int = obj.get("Size", 0)
                     storage_class_raw: str = obj.get("StorageClass", "STANDARD")
                     if storage_class_raw in StorageClass._value2member_map_:
@@ -96,14 +113,13 @@ class ScannerService:
                             storage_class_raw, bucket, key,
                         )
                         storage_class = None
-                    last_modified: datetime = obj["LastModified"]
                     age_days = (now - last_modified).days
                     size_gb = size_bytes / (1024 ** 3)
                     total_size_bytes += size_bytes
                     if storage_class_raw == "STANDARD":
                         standard_size_bytes += size_bytes
 
-                    if age_days >= _STALE_DAYS:
+                    if age_days >= stale_days:
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
                             bucket=bucket,
@@ -120,7 +136,7 @@ class ScannerService:
                             storage_class=storage_class,
                             last_modified=last_modified,
                         ))
-                    elif age_days >= _COLD_DAYS and storage_class_raw == "STANDARD":
+                    elif age_days >= cold_days and storage_class_raw == "STANDARD":
                         savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
@@ -132,19 +148,19 @@ class ScannerService:
                                 f"Object has been in STANDARD storage for {age_days} days "
                                 f"without modification."
                             ),
-                            recommended_action=f"Transition to {_TARGET_CLASS.value}",
+                            recommended_action=f"Transition to {target_class.value}",
                             estimated_monthly_savings=savings,
                             size_bytes=size_bytes,
                             storage_class=storage_class,
                             last_modified=last_modified,
-                            target_storage_class=_TARGET_CLASS,
+                            target_storage_class=target_class,
                         ))
 
                 if count >= max_objects:
                     break
 
         except ClientError as e:
-            code = e.response["Error"]["Code"]
+            code: str = str(e.response.get("Error", {}).get("Code", ""))
             if code not in ("AccessDenied", "NoSuchBucket", "AllAccessDisabled"):
                 raise
 
@@ -155,7 +171,7 @@ class ScannerService:
             self.s3.get_bucket_lifecycle_configuration(Bucket=bucket)
             return None  # lifecycle policy already exists
         except ClientError as e:
-            code = e.response["Error"]["Code"]
+            code: str = str(e.response.get("Error", {}).get("Code", ""))
             if code == "NoSuchLifecycleConfiguration":
                 size_gb = total_size_bytes / (1024 ** 3)
                 estimated_savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
@@ -178,21 +194,25 @@ class ScannerService:
                 raise
             return None
 
-    def _check_multipart_uploads(self, bucket: str) -> list[Recommendation]:
+    def _check_multipart_uploads(self, bucket: str, multipart_days: int = 7) -> list[Recommendation]:
         recs: list[Recommendation] = []
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(days=_MULTIPART_DAYS)
+        cutoff = now - timedelta(days=multipart_days)
 
         try:
             paginator = self.s3.get_paginator("list_multipart_uploads")
             for page in paginator.paginate(Bucket=bucket):
                 for upload in page.get("Uploads", []):
-                    initiated: datetime = upload["Initiated"]
+                    initiated = upload.get("Initiated")
+                    upload_key = upload.get("Key")
+                    upload_id = upload.get("UploadId")
+                    if initiated is None or upload_key is None or upload_id is None:
+                        continue
                     if initiated < cutoff:
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
                             bucket=bucket,
-                            key=upload["Key"],
+                            key=upload_key,
                             recommendation_type=RecommendationType.DELETE_INCOMPLETE_UPLOAD,
                             risk_level=RiskLevel.LOW,
                             reason=(
@@ -202,11 +222,11 @@ class ScannerService:
                             recommended_action="Abort incomplete multipart upload",
                             estimated_monthly_savings=0.0,
                             size_bytes=0,
-                            upload_id=upload["UploadId"],
+                            upload_id=upload_id,
                             last_modified=initiated,
                         ))
         except ClientError as e:
-            code = e.response["Error"]["Code"]
+            code: str = str(e.response.get("Error", {}).get("Code", ""))
             if code not in ("AccessDenied", "NoSuchBucket", "NoSuchUpload"):
                 raise
 

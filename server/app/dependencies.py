@@ -1,6 +1,7 @@
 import os
 
 import boto3
+from mypy_boto3_s3 import S3Client
 
 from app.executor import ExecutionService, RollbackService
 from app.scanner import ScannerService
@@ -10,7 +11,7 @@ from app.state import RunStore
 # S3 is a global service — list/read operations work regardless of which
 # regional endpoint the client uses. We default to us-east-1 (the S3 global
 # endpoint) if no region is configured, so the client is always valid.
-_s3 = boto3.client("s3", region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
+_s3: S3Client = boto3.client("s3", region_name=os.getenv("AWS_DEFAULT_REGION", "us-east-1"))  # pyright: ignore[reportUnknownMemberType]
 
 run_store = RunStore(db_path=os.getenv("RUNS_DB_PATH", "data/runs.db"))
 scanner_service = ScannerService(s3_client=_s3)
