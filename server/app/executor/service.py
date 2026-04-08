@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 import os
+from typing import TYPE_CHECKING
 import uuid
 
 import boto3
 from botocore.exceptions import ClientError
-from mypy_boto3_s3 import S3Client
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from app.models import (
     ExecuteRequest,

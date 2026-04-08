@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 import logging
+from typing import TYPE_CHECKING
 import uuid
 
 import boto3
 from botocore.exceptions import ClientError
-from mypy_boto3_s3 import S3Client
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from app.models import Recommendation, RecommendationType, RiskLevel, ScanRequest, StorageClass
 
@@ -85,7 +90,10 @@ class ScannerService:
             bucket, max_objects, cold_days, stale_days, target_class,
         )
         recommendations.extend(object_recs)
-        lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes, target_class=target_class)
+        lifecycle_rec = self._check_lifecycle(
+            bucket, total_size_bytes=standard_size_bytes, target_class=target_class,
+            cold_days=cold_days, multipart_days=multipart_days,
+        )
         if lifecycle_rec:
             recommendations.append(lifecycle_rec)
         recommendations.extend(self._check_multipart_uploads(bucket, multipart_days))
@@ -148,6 +156,8 @@ class ScannerService:
                         ))
                     elif age_days >= cold_days and storage_class_raw == "STANDARD":
                         target_price = _PRICE_PER_GB.get(target_class.value, _PRICE_PER_GB["GLACIER_IR"])
+                        if target_price >= _STANDARD_PRICE:
+                            continue
                         savings = round((_STANDARD_PRICE - target_price) * size_gb, 4)
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
@@ -179,6 +189,7 @@ class ScannerService:
 
     def _check_lifecycle(
         self, bucket: str, *, total_size_bytes: int = 0, target_class: StorageClass = StorageClass.GLACIER_IR,
+        cold_days: int = 90, multipart_days: int = 7,
     ) -> Recommendation | None:
         try:
             self.s3.get_bucket_lifecycle_configuration(Bucket=bucket)
@@ -188,7 +199,7 @@ class ScannerService:
             if code == "NoSuchLifecycleConfiguration":
                 size_gb = total_size_bytes / (1024 ** 3)
                 target_price = _PRICE_PER_GB.get(target_class.value, _PRICE_PER_GB["GLACIER_IR"])
-                estimated_savings = round((_STANDARD_PRICE - target_price) * size_gb, 4)
+                estimated_savings = round(max(0, (_STANDARD_PRICE - target_price)) * size_gb, 4)
                 return Recommendation(
                     id=str(uuid.uuid4()),
                     bucket=bucket,
@@ -197,7 +208,7 @@ class ScannerService:
                     risk_level=RiskLevel.LOW,
                     reason="Bucket has no lifecycle policy for archival or multipart cleanup.",
                     recommended_action=(
-                        "Add lifecycle rules for 90-day archive and 7-day multipart abort."
+                        f"Add lifecycle rules for {cold_days}-day {target_class.value} archive and {multipart_days}-day multipart abort."
                     ),
                     estimated_monthly_savings=estimated_savings,
                     size_bytes=0,

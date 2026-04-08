@@ -128,7 +128,11 @@ def _merge(args: argparse.Namespace) -> int:
         file_tag = data.get("tag")
         file_notes = data.get("notes")
         file_pub_date = data.get("pub_date")
-        platforms: dict[str, object] = data.get("platforms", {})
+        platforms_raw = data.get("platforms", {})
+        if not isinstance(platforms_raw, dict):
+            _error(f"Invalid 'platforms' value in {file_path}: expected object, got {type(platforms_raw).__name__}")
+            return 1
+        platforms: dict[str, object] = platforms_raw
 
         if not file_version or not file_tag:
             _error(f"Invalid updater fragment format: {file_path}")

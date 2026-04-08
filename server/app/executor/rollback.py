@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import boto3
 from botocore.exceptions import ClientError
-from mypy_boto3_s3 import S3Client
-from mypy_boto3_s3.literals import StorageClassType
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
+    from mypy_boto3_s3.literals import StorageClassType
 
 from app.models import (
     ExecutionActionStatus,
@@ -126,6 +131,11 @@ class RollbackService:
 
         bucket: str = record.pre_change_state.get("bucket") or record.bucket or ""
         key: str = record.pre_change_state.get("key") or record.key or ""
+
+        if not bucket:
+            return False, "Cannot rollback: missing bucket identifier."
+        if not key and record.recommendation_type != RecommendationType.ADD_LIFECYCLE_POLICY:
+            return False, "Cannot rollback: missing key identifier."
 
         try:
             if record.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:

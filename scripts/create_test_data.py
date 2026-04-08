@@ -1,7 +1,13 @@
-import boto3
-from mypy_boto3_s3 import S3Client
+from __future__ import annotations
+
 import random
 import string
+from typing import TYPE_CHECKING
+
+import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 BUCKET_NAME = "cost-optimizer-test"
 REGION = "us-west-2"
@@ -29,7 +35,7 @@ def create_bucket(s3_client: S3Client) -> None:
         raise
 
 def create_old_large_files(s3_client: S3Client) -> None:
-    """Create old, large files that should recommend GLacier transition"""
+    """Create old, large files that should recommend Glacier transition"""
     print("\nCreating old large files (should recommend Glacier)...")
 
     files = [
@@ -113,7 +119,7 @@ def print_summary(s3_client: S3Client) -> None:
 
     total_size = sum(obj.get("Size", 0) for obj in objects)
 
-    print(f"Bicket: {BUCKET_NAME}")
+    print(f"Bucket: {BUCKET_NAME}")
     print(f"Total objects: {len(objects)}")
     print(f"Total size: {total_size / (1024*1024):.2f} MB")
 
@@ -129,7 +135,7 @@ def print_summary(s3_client: S3Client) -> None:
 
 def main() -> None:
     print("=" * 50)
-    print("S3 COST OPTIMZER - TEST DATA SETUP")
+    print("S3 COST OPTIMIZER - TEST DATA SETUP")
     print("=" * 50)
 
     # Create S3 Client

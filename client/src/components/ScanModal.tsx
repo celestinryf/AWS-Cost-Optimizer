@@ -104,7 +104,7 @@ export default function ScanModal({ onConfirm, onClose, loading }: Props) {
                   type="number"
                   className={styles.input}
                   value={coldDays}
-                  min={1}
+                  min={0}
                   max={3650}
                   onChange={(e) => setColdDays(Number(e.target.value))}
                 />
@@ -117,7 +117,7 @@ export default function ScanModal({ onConfirm, onClose, loading }: Props) {
                   type="number"
                   className={styles.input}
                   value={staleDays}
-                  min={1}
+                  min={0}
                   max={3650}
                   onChange={(e) => setStaleDays(Number(e.target.value))}
                 />
@@ -130,7 +130,7 @@ export default function ScanModal({ onConfirm, onClose, loading }: Props) {
                   type="number"
                   className={styles.input}
                   value={multipartDays}
-                  min={1}
+                  min={0}
                   max={365}
                   onChange={(e) => setMultipartDays(Number(e.target.value))}
                 />
