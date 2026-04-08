@@ -10,8 +10,18 @@ from app.models import Recommendation, RecommendationType, RiskLevel, ScanReques
 
 _log = logging.getLogger(__name__)
 
-_STANDARD_PRICE = 0.023   # $/GB/month
-_GLACIER_IR_PRICE = 0.004
+_PRICE_PER_GB: dict[str, float] = {
+    "STANDARD":             0.023,
+    "REDUCED_REDUNDANCY":   0.024,
+    "STANDARD_IA":          0.0125,
+    "ONEZONE_IA":           0.01,
+    "INTELLIGENT_TIERING":  0.023,
+    "GLACIER_IR":           0.004,
+    "GLACIER":              0.0036,
+    "DEEP_ARCHIVE":         0.00099,
+    "EXPRESS_ONEZONE":      0.16,
+}
+_STANDARD_PRICE = _PRICE_PER_GB["STANDARD"]
 
 
 class ScannerService:
@@ -75,7 +85,7 @@ class ScannerService:
             bucket, max_objects, cold_days, stale_days, target_class,
         )
         recommendations.extend(object_recs)
-        lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes)
+        lifecycle_rec = self._check_lifecycle(bucket, total_size_bytes=standard_size_bytes, target_class=target_class)
         if lifecycle_rec:
             recommendations.append(lifecycle_rec)
         recommendations.extend(self._check_multipart_uploads(bucket, multipart_days))
@@ -137,7 +147,8 @@ class ScannerService:
                             last_modified=last_modified,
                         ))
                     elif age_days >= cold_days and storage_class_raw == "STANDARD":
-                        savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
+                        target_price = _PRICE_PER_GB.get(target_class.value, _PRICE_PER_GB["GLACIER_IR"])
+                        savings = round((_STANDARD_PRICE - target_price) * size_gb, 4)
                         recs.append(Recommendation(
                             id=str(uuid.uuid4()),
                             bucket=bucket,
@@ -166,7 +177,9 @@ class ScannerService:
 
         return recs, total_size_bytes, standard_size_bytes
 
-    def _check_lifecycle(self, bucket: str, *, total_size_bytes: int = 0) -> Recommendation | None:
+    def _check_lifecycle(
+        self, bucket: str, *, total_size_bytes: int = 0, target_class: StorageClass = StorageClass.GLACIER_IR,
+    ) -> Recommendation | None:
         try:
             self.s3.get_bucket_lifecycle_configuration(Bucket=bucket)
             return None  # lifecycle policy already exists
@@ -174,7 +187,8 @@ class ScannerService:
             code: str = str(e.response.get("Error", {}).get("Code", ""))
             if code == "NoSuchLifecycleConfiguration":
                 size_gb = total_size_bytes / (1024 ** 3)
-                estimated_savings = round((_STANDARD_PRICE - _GLACIER_IR_PRICE) * size_gb, 4)
+                target_price = _PRICE_PER_GB.get(target_class.value, _PRICE_PER_GB["GLACIER_IR"])
+                estimated_savings = round((_STANDARD_PRICE - target_price) * size_gb, 4)
                 return Recommendation(
                     id=str(uuid.uuid4()),
                     bucket=bucket,

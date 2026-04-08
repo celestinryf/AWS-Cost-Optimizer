@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
-from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError
+from mypy_boto3_s3 import S3Client
+from mypy_boto3_s3.literals import StorageClassType
 
 from app.models import (
     ExecutionActionStatus,
@@ -16,13 +17,13 @@ from app.models import (
 
 
 class RollbackService:
-    def __init__(self, s3_client: Any = None) -> None:
-        self._s3 = s3_client
+    def __init__(self, s3_client: S3Client | None = None) -> None:
+        self._s3: S3Client | None = s3_client
 
     @property
-    def s3(self) -> Any:
+    def s3(self) -> S3Client:
         if self._s3 is None:
-            self._s3 = boto3.client("s3")
+            self._s3 = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
         return self._s3
 
     REVERSIBLE_ACTIONS = {
@@ -123,12 +124,12 @@ class RollbackService:
         if not record.pre_change_state:
             return False, "Missing pre-change state snapshot."
 
-        bucket = record.pre_change_state.get("bucket") or record.bucket
-        key = record.pre_change_state.get("key") or record.key
+        bucket: str = record.pre_change_state.get("bucket") or record.bucket or ""
+        key: str = record.pre_change_state.get("key") or record.key or ""
 
         try:
             if record.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
-                original_class = record.pre_change_state.get("storage_class") or "STANDARD"
+                original_class: StorageClassType = record.pre_change_state.get("storage_class") or "STANDARD"
                 self.s3.copy_object(
                     Bucket=bucket,
                     Key=key,
@@ -152,8 +153,8 @@ class RollbackService:
                     return True, f"Restored original lifecycle policy on {bucket}."
 
         except ClientError as e:
-            code = e.response["Error"]["Code"]
-            msg = e.response["Error"]["Message"]
+            code = e.response.get("Error", {}).get("Code", "Unknown")
+            msg = e.response.get("Error", {}).get("Message", "")
             return False, f"S3 error ({code}): {msg}"
 
         return False, "No rollback handler for recommendation type."
