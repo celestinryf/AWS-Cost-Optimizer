@@ -1,18 +1,24 @@
-import boto3
+from __future__ import annotations
+
 import random
 import string
-from datetime import datetime
+from typing import TYPE_CHECKING
+
+import boto3
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 BUCKET_NAME = "cost-optimizer-test"
 REGION = "us-west-2"
 
-def random_string(length = 10):
+def random_string(length: int = 10) -> str:
     return ''.join(random.choices(string.ascii_lowercase, k = length))
 
-def create_bucket(s3_client):
+def create_bucket(s3_client: S3Client) -> None:
     """Create the test bucket if it doesn't exist"""
     try:
-        if REGION == "us-east-1":
+        if REGION == "us-east-1":  # pyright: ignore[reportUnnecessaryComparison]
             s3_client.create_bucket(Bucket=BUCKET_NAME)
         else:
             s3_client.create_bucket(
@@ -28,8 +34,8 @@ def create_bucket(s3_client):
         print(f"Error creating bucket: {e}")
         raise
 
-def create_old_large_files(s3_client):
-    """Create old, large files that should recommend GLacier transition"""
+def create_old_large_files(s3_client: S3Client) -> None:
+    """Create old, large files that should recommend Glacier transition"""
     print("\nCreating old large files (should recommend Glacier)...")
 
     files = [
@@ -50,7 +56,7 @@ def create_old_large_files(s3_client):
         )
         print(f"Created {key} ({size_mb} MB)")
 
-def create_small_log_files(s3_client):
+def create_small_log_files(s3_client: S3Client) -> None:
     """Create many small log files that should recommend lifecycle policy."""
     print("\nCreating small log files (should recommend lifecycle policy)...")
 
@@ -66,7 +72,7 @@ def create_small_log_files(s3_client):
 
     print(f"Created 24 log files in logs/2023/")
 
-def create_incomplete_multipart_uploads(s3_client):
+def create_incomplete_multipart_uploads(s3_client: S3Client) -> None:
     """Create incomplete multipart uploads that should be cleaned up."""
     print("\nCreating incomplete multipart uploads (should recommend abort)...")
 
@@ -83,7 +89,7 @@ def create_incomplete_multipart_uploads(s3_client):
         )
         print(f"Created incomplete upload: {key} (ID: {response['UploadId'][:8]}...)")
 
-def create_standard_recent_files(s3_client):
+def create_standard_recent_files(s3_client: S3Client) -> None:
     """Create recent files that should NOT generate recommendations."""
     print("\nCreating recent files (should NOT generate recommendations)...")
 
@@ -101,7 +107,7 @@ def create_standard_recent_files(s3_client):
         )
         print(f"Created {key} (recent, should keep)")
 
-def print_summary(s3_client):
+def print_summary(s3_client: S3Client) -> None:
     """Print summary of what was created."""
     print("\n" + "=" * 50)
     print("TEST DATA SUMMARY")
@@ -111,9 +117,9 @@ def print_summary(s3_client):
     response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
     objects = response.get("Contents", [])
 
-    total_size = sum(obj["Size"] for obj in objects)
+    total_size = sum(obj.get("Size", 0) for obj in objects)
 
-    print(f"Bicket: {BUCKET_NAME}")
+    print(f"Bucket: {BUCKET_NAME}")
     print(f"Total objects: {len(objects)}")
     print(f"Total size: {total_size / (1024*1024):.2f} MB")
 
@@ -127,13 +133,13 @@ def print_summary(s3_client):
     print(" - 3 multipart upload cleanups")
     print("=" * 50)
 
-def main():
+def main() -> None:
     print("=" * 50)
-    print("S3 COST OPTIMZER - TEST DATA SETUP")
+    print("S3 COST OPTIMIZER - TEST DATA SETUP")
     print("=" * 50)
 
     # Create S3 Client
-    s3_client = boto3.client("s3", region_name=REGION)
+    s3_client: S3Client = boto3.client("s3", region_name=REGION)  # pyright: ignore[reportUnknownMemberType]
 
     # Create test data
     create_bucket(s3_client)

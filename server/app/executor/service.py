@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
-from typing import Any
 import os
+from typing import TYPE_CHECKING
 import uuid
 
 import boto3
 from botocore.exceptions import ClientError
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from app.models import (
     ExecuteRequest,
@@ -21,13 +26,13 @@ from app.models import (
 
 
 class ExecutionService:
-    def __init__(self, s3_client: Any = None) -> None:
-        self._s3 = s3_client
+    def __init__(self, s3_client: S3Client | None = None) -> None:
+        self._s3: S3Client | None = s3_client
 
     @property
-    def s3(self) -> Any:
+    def s3(self) -> S3Client:
         if self._s3 is None:
-            self._s3 = boto3.client("s3")
+            self._s3 = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
         return self._s3
 
     REVERSIBLE_ACTIONS = {
@@ -191,7 +196,7 @@ class ExecutionService:
                 continue
 
             success, message, extra_state = self._execute_action(recommendation)
-            pre_state = {**self._capture_pre_change_state(recommendation), **extra_state}
+            pre_state: dict[str, object] = {**self._capture_pre_change_state(recommendation), **extra_state}
             if success:
                 executed += 1
                 action_results.append(
@@ -252,7 +257,7 @@ class ExecutionService:
         if request.dry_run is False:
             return request.mode, False
 
-        return request.mode, request.mode == ExecutionMode.DRY_RUN
+        return request.mode, False
 
     def _is_mode_eligible(self, mode: ExecutionMode, score: RiskScore) -> bool:
         if mode == ExecutionMode.DRY_RUN:
@@ -279,38 +284,42 @@ class ExecutionService:
         )
         return {item.strip() for item in raw.split(",") if item.strip()}
 
-    def _execute_action(self, recommendation: Recommendation) -> tuple[bool, str, dict]:
+    def _execute_action(self, recommendation: Recommendation) -> tuple[bool, str, dict[str, object]]:
         rec = recommendation
+        key = rec.key
         try:
             if rec.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
+                if key is None:
+                    return False, "Cannot execute: key is not set on recommendation.", {}
                 if rec.target_storage_class is None:
                     return False, "Cannot execute: target_storage_class is not set on recommendation.", {}
                 target = rec.target_storage_class.value
                 self.s3.copy_object(
                     Bucket=rec.bucket,
-                    Key=rec.key,
-                    CopySource={"Bucket": rec.bucket, "Key": rec.key},
+                    Key=key,
+                    CopySource={"Bucket": rec.bucket, "Key": key},
                     StorageClass=target,
                     MetadataDirective="COPY",
                     TaggingDirective="COPY",
                 )
-                return True, f"Transitioned {rec.key} to {target}.", {}
+                return True, f"Transitioned {key} to {target}.", {}
 
             if rec.recommendation_type == RecommendationType.ADD_LIFECYCLE_POLICY:
-                # Capture existing rules before mutating (needed for rollback)
+                existing_rules: list[dict[str, object]] | None
                 try:
                     existing_rules = self.s3.get_bucket_lifecycle_configuration(
                         Bucket=rec.bucket
-                    )["Rules"]
+                    ).get("Rules")  # type: ignore[assignment]
                 except ClientError as e:
-                    if e.response["Error"]["Code"] == "NoSuchLifecycleConfiguration":
+                    code: str = str(e.response.get("Error", {}).get("Code", ""))
+                    if code == "NoSuchLifecycleConfiguration":
                         existing_rules = None
                     else:
                         raise
 
-                extra = {"existing_lifecycle_rules": existing_rules}
+                extra: dict[str, object] = {"existing_lifecycle_rules": existing_rules}
 
-                new_rules = [
+                new_rules: list[dict[str, object]] = [
                     {
                         "ID": "aws-cost-optimizer-archive",
                         "Status": "Enabled",
@@ -324,34 +333,38 @@ class ExecutionService:
                         "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
                     },
                 ]
-                existing_ids = {r["ID"] for r in (existing_rules or [])}
-                merged = (existing_rules or []) + [
+                existing_ids: set[object] = {r.get("ID") for r in (existing_rules or [])}
+                merged: list[dict[str, object]] = (existing_rules or []) + [
                     r for r in new_rules if r["ID"] not in existing_ids
                 ]
                 self.s3.put_bucket_lifecycle_configuration(
                     Bucket=rec.bucket,
-                    LifecycleConfiguration={"Rules": merged},
+                    LifecycleConfiguration={"Rules": merged},  # type: ignore[arg-type]
                 )
                 return True, f"Applied lifecycle policy to {rec.bucket}.", extra
 
             if rec.recommendation_type == RecommendationType.DELETE_INCOMPLETE_UPLOAD:
+                if key is None:
+                    return False, "Cannot execute: key is not set on recommendation.", {}
                 if rec.upload_id is None:
                     return False, "Cannot execute: upload_id is not set on recommendation.", {}
                 self.s3.abort_multipart_upload(
                     Bucket=rec.bucket,
-                    Key=rec.key,
+                    Key=key,
                     UploadId=rec.upload_id,
                 )
-                return True, f"Aborted incomplete upload for {rec.key}.", {}
+                return True, f"Aborted incomplete upload for {key}.", {}
 
             if rec.recommendation_type == RecommendationType.DELETE_STALE_OBJECT:
-                self.s3.delete_object(Bucket=rec.bucket, Key=rec.key)
-                return True, f"Deleted stale object {rec.key}.", {}
+                if key is None:
+                    return False, "Cannot execute: key is not set on recommendation.", {}
+                self.s3.delete_object(Bucket=rec.bucket, Key=key)
+                return True, f"Deleted stale object {key}.", {}
 
         except ClientError as e:
-            code = e.response["Error"]["Code"]
-            msg = e.response["Error"]["Message"]
-            return False, f"S3 error ({code}): {msg}", {}
+            code_str: str = str(e.response.get("Error", {}).get("Code", "Unknown"))
+            msg: str = str(e.response.get("Error", {}).get("Message", ""))
+            return False, f"S3 error ({code_str}): {msg}", {}
 
         return False, "Unsupported recommendation type.", {}
 
@@ -366,8 +379,8 @@ class ExecutionService:
         required_permissions: list[str],
         missing_permissions: list[str],
         simulated: bool,
-        pre_change_state: dict,
-        post_change_state: dict | None,
+        pre_change_state: dict[str, object],
+        post_change_state: dict[str, object] | None,
     ) -> ExecutionActionResult:
         requires_approval = score.requires_approval if score else True
         risk_level = score.risk_level if score else recommendation.risk_level
@@ -398,7 +411,7 @@ class ExecutionService:
             rollback_status=rollback_status,
         )
 
-    def _capture_pre_change_state(self, recommendation: Recommendation) -> dict:
+    def _capture_pre_change_state(self, recommendation: Recommendation) -> dict[str, object]:
         last_modified = recommendation.last_modified.isoformat() if recommendation.last_modified else None
         return {
             "bucket": recommendation.bucket,
@@ -409,7 +422,7 @@ class ExecutionService:
             "risk_level": recommendation.risk_level.value,
         }
 
-    def _capture_post_change_state(self, recommendation: Recommendation, simulated: bool) -> dict:
+    def _capture_post_change_state(self, recommendation: Recommendation, simulated: bool) -> dict[str, object]:
         if recommendation.recommendation_type == RecommendationType.CHANGE_STORAGE_CLASS:
             return {
                 "action": "change_storage_class",

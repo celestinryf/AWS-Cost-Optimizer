@@ -190,6 +190,10 @@ export interface ScanRequest {
   include_buckets: string[];
   exclude_buckets: string[];
   max_objects_per_bucket: number;
+  cold_days: number;
+  stale_days: number;
+  multipart_days: number;
+  target_storage_class: StorageClass;
 }
 
 export interface ScoreRequest {

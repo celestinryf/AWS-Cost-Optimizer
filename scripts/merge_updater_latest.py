@@ -93,7 +93,7 @@ def _collect(args: argparse.Namespace) -> int:
         _error("No updater platforms were collected from signatures")
         return 1
 
-    payload = {
+    payload: dict[str, object] = {
         "tag": args.tag,
         "version": args.version,
         "notes": _read_release_notes(Path(args.notes_file)),
@@ -128,13 +128,13 @@ def _merge(args: argparse.Namespace) -> int:
         file_tag = data.get("tag")
         file_notes = data.get("notes")
         file_pub_date = data.get("pub_date")
-        platforms = data.get("platforms", {})
+        platforms_raw = data.get("platforms", {})
+        if not isinstance(platforms_raw, dict):
+            _error(f"Invalid 'platforms' value in {file_path}: expected object, got {type(platforms_raw).__name__}")
+            return 1
+        platforms: dict[str, object] = platforms_raw
 
-        if (
-            not file_version
-            or not file_tag
-            or not isinstance(platforms, dict)
-        ):
+        if not file_version or not file_tag:
             _error(f"Invalid updater fragment format: {file_path}")
             return 1
 
@@ -170,7 +170,7 @@ def _merge(args: argparse.Namespace) -> int:
         _error("No valid updater fragments loaded")
         return 1
 
-    merged = {
+    merged: dict[str, object] = {
         "version": version,
         "notes": notes or "",
         "pub_date": pub_date

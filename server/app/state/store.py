@@ -6,8 +6,12 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import Lock
-from typing import Optional
+from typing import Optional, Sequence, TypeVar
 import uuid
+
+from pydantic import BaseModel
+
+_M = TypeVar("_M", bound=BaseModel)
 
 from app.models import (
     ExecuteResponse,
@@ -27,8 +31,8 @@ class RunRecord:
     run_id: str
     status: RunStatus
     recommendations: list[Recommendation]
-    scores: list[RiskScore] = field(default_factory=list)
-    savings_details: list[SavingsEstimate] = field(default_factory=list)
+    scores: list[RiskScore] = field(default_factory=lambda: list[RiskScore]())
+    savings_details: list[SavingsEstimate] = field(default_factory=lambda: list[SavingsEstimate]())
     savings_summary: Optional[SavingsSummary] = None
     execution: Optional[ExecuteResponse] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -223,7 +227,7 @@ class RunStore:
             FROM execution_audit
             WHERE run_id = ?
         """
-        params: list = [run_id]
+        params: list[str] = [run_id]
 
         if execution_id:
             query += " AND execution_id = ?"
@@ -364,21 +368,21 @@ class RunStore:
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
-    def _serialize_models(self, data: list) -> str:
+    def _serialize_models(self, data: Sequence[BaseModel]) -> str:
         return json.dumps([item.model_dump(mode="json") for item in data])
 
-    def _serialize_model(self, data) -> Optional[str]:
+    def _serialize_model(self, data: Optional[BaseModel]) -> Optional[str]:
         if data is None:
             return None
         return json.dumps(data.model_dump(mode="json"))
 
-    def _deserialize_models(self, payload: str, model_type):
+    def _deserialize_models(self, payload: str, model_type: type[_M]) -> list[_M]:
         if not payload:
             return []
         raw_items = json.loads(payload)
         return [model_type.model_validate(item) for item in raw_items]
 
-    def _deserialize_model(self, payload: Optional[str], model_type):
+    def _deserialize_model(self, payload: Optional[str], model_type: type[_M]) -> Optional[_M]:
         if not payload:
             return None
         return model_type.model_validate(json.loads(payload))

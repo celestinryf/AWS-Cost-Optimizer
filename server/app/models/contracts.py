@@ -129,6 +129,10 @@ class ScanRequest(BaseModel):
     include_buckets: list[str] = Field(default_factory=list)
     exclude_buckets: list[str] = Field(default_factory=list)
     max_objects_per_bucket: int = Field(default=1000, ge=1, le=100000)
+    cold_days: int = Field(default=90, ge=0, le=3650)
+    stale_days: int = Field(default=365, ge=0, le=3650)
+    multipart_days: int = Field(default=7, ge=0, le=365)
+    target_storage_class: StorageClass = Field(default=StorageClass.GLACIER_IR)
 
 
 class ScanResponse(BaseModel):
@@ -207,7 +211,7 @@ class ExecuteResponse(BaseModel):
     skipped: int
     blocked: int
     failed: int
-    action_results: list[ExecutionActionResult] = Field(default_factory=list)
+    action_results: list[ExecutionActionResult] = Field(default_factory=lambda: list[ExecutionActionResult]())
     executed_at: datetime
 
 
@@ -266,7 +270,7 @@ class RollbackResponse(BaseModel):
     rolled_back: int
     skipped: int
     failed: int
-    results: list[RollbackActionResult] = Field(default_factory=list)
+    results: list[RollbackActionResult] = Field(default_factory=lambda: list[RollbackActionResult]())
     processed_at: datetime
 
 
@@ -282,10 +286,10 @@ class RunDetails(BaseModel):
     run_id: str
     status: RunStatus
     recommendations: list[Recommendation]
-    scores: list[RiskScore] = Field(default_factory=list)
-    savings_details: list[SavingsEstimate] = Field(default_factory=list)
+    scores: list[RiskScore] = Field(default_factory=lambda: list[RiskScore]())
+    savings_details: list[SavingsEstimate] = Field(default_factory=lambda: list[SavingsEstimate]())
     savings_summary: Optional[SavingsSummary] = None
     execution: Optional[ExecuteResponse] = None
-    audit_records: list[ExecutionAuditRecord] = Field(default_factory=list)
+    audit_records: list[ExecutionAuditRecord] = Field(default_factory=lambda: list[ExecutionAuditRecord]())
     created_at: datetime
     updated_at: datetime
